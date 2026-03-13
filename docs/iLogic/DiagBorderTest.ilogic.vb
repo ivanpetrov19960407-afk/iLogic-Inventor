@@ -52,12 +52,14 @@ Sub Main()
         log.AppendLine("Рамка уже существует, используем.")
     Catch
         Try
-            ThisApplication.SilentOperation = True
-            borderDef = doc.BorderDefinitions.Add(BORDER_NAME)
-            ThisApplication.SilentOperation = False
-            log.AppendLine("Рамка создана через .Add()")
+            Try
+                ThisApplication.SilentOperation = True
+                borderDef = doc.BorderDefinitions.Add(BORDER_NAME)
+                log.AppendLine("Рамка создана через .Add()")
+            Finally
+                ThisApplication.SilentOperation = False
+            End Try
         Catch ex As Exception
-            ThisApplication.SilentOperation = False
             log.AppendLine("ОШИБКА Add рамки: " & ex.Message)
         End Try
     End Try
@@ -95,12 +97,14 @@ Sub Main()
         log.AppendLine("Штамп уже существует, используем.")
     Catch
         Try
-            ThisApplication.SilentOperation = True
-            tbDef = doc.TitleBlockDefinitions.Add(TB_NAME)
-            ThisApplication.SilentOperation = False
-            log.AppendLine("Штамп создан через .Add()")
+            Try
+                ThisApplication.SilentOperation = True
+                tbDef = doc.TitleBlockDefinitions.Add(TB_NAME)
+                log.AppendLine("Штамп создан через .Add()")
+            Finally
+                ThisApplication.SilentOperation = False
+            End Try
         Catch ex As Exception
-            ThisApplication.SilentOperation = False
             log.AppendLine("ОШИБКА Add штампа: " & ex.Message)
         End Try
     End Try
@@ -145,28 +149,34 @@ Sub Main()
         log.AppendLine("ОШИБКА создания листа: " & ex.Message)
     End Try
 
-    ' --- Шаг 6: AddCustomBorder ---
+    ' --- Шаг 6: AddBorder ---
     If sheet IsNot Nothing AndAlso borderDef IsNot Nothing Then
         log.AppendLine("")
-        log.AppendLine("--- AddCustomBorder ---")
-        ' Попытка 1: без SilentOperation
+        log.AppendLine("--- AddBorder ---")
         Try
-            sheet.AddCustomBorder(borderDef)
-            log.AppendLine("AddCustomBorder БЕЗ SilentOperation — OK")
+            If sheet.Border IsNot Nothing Then
+                sheet.Border.Delete()
+            End If
+            log.AppendLine("Существующая рамка удалена перед AddBorder")
         Catch ex As Exception
-            log.AppendLine("AddCustomBorder БЕЗ SilentOperation — ОШИБКА: " & ex.Message)
-            ' Попытка 2: с SilentOperation
+            log.AppendLine("Удаление существующей рамки: " & ex.Message)
+        End Try
+
+        Dim addBorderOk As Boolean = False
+        Try
             Try
                 ThisApplication.SilentOperation = True
-                sheet.AddCustomBorder(borderDef)
+                sheet.AddBorder(borderDef)
+                addBorderOk = True
+            Finally
                 ThisApplication.SilentOperation = False
-                log.AppendLine("AddCustomBorder С SilentOperation=True — OK")
-            Catch ex2 As Exception
-                ThisApplication.SilentOperation = False
-                log.AppendLine("AddCustomBorder С SilentOperation=True — ОШИБКА: " & ex2.Message)
             End Try
+            log.AppendLine("AddBorder OK")
+        Catch ex As Exception
+            log.AppendLine("AddBorder ОШИБКА: " & ex.Message)
         End Try
-        ' Проверяем результат
+
+        log.AppendLine("AddBorder success flag = " & addBorderOk)
         Try
             If sheet.Border IsNot Nothing Then
                 log.AppendLine("sheet.Border после операции: ЕСТЬ (" & sheet.Border.Name & ")")
@@ -182,25 +192,39 @@ Sub Main()
     If sheet IsNot Nothing AndAlso tbDef IsNot Nothing Then
         log.AppendLine("")
         log.AppendLine("--- AddTitleBlock ---")
-        Dim ps(1) As String
-        ps(1) = "ТЕСТ"
-        ' Попытка 1: без SilentOperation
+        Dim ps() As String = New String(6) {}
+        ps(0) = "ТЕСТ-КОД"
+        ps(1) = "Тестовый проект"
+        ps(2) = "Тестовый чертёж"
+        ps(3) = "Тестовая организация"
+        ps(4) = "ИД"
+        ps(5) = "1"
+        ps(6) = "1"
+
         Try
-            sheet.AddTitleBlock(tbDef, Nothing, ps)
-            log.AppendLine("AddTitleBlock БЕЗ SilentOperation — OK")
+            If sheet.TitleBlock IsNot Nothing Then
+                sheet.TitleBlock.Delete()
+            End If
+            log.AppendLine("Существующий штамп удалён перед AddTitleBlock")
         Catch ex As Exception
-            log.AppendLine("AddTitleBlock БЕЗ SilentOperation — ОШИБКА: " & ex.Message)
-            ' Попытка 2: с SilentOperation
+            log.AppendLine("Удаление существующего штампа: " & ex.Message)
+        End Try
+
+        Dim addTitleBlockOk As Boolean = False
+        Try
             Try
                 ThisApplication.SilentOperation = True
-                sheet.AddTitleBlock(tbDef, Nothing, ps)
+                sheet.AddTitleBlock(tbDef, , ps)
+                addTitleBlockOk = True
+            Finally
                 ThisApplication.SilentOperation = False
-                log.AppendLine("AddTitleBlock С SilentOperation=True — OK")
-            Catch ex2 As Exception
-                ThisApplication.SilentOperation = False
-                log.AppendLine("AddTitleBlock С SilentOperation=True — ОШИБКА: " & ex2.Message)
             End Try
+            log.AppendLine("AddTitleBlock OK")
+        Catch ex As Exception
+            log.AppendLine("AddTitleBlock ОШИБКА: " & ex.Message)
         End Try
+
+        log.AppendLine("AddTitleBlock success flag = " & addTitleBlockOk)
         Try
             If sheet.TitleBlock IsNot Nothing Then
                 log.AppendLine("sheet.TitleBlock после операции: ЕСТЬ (" & sheet.TitleBlock.Name & ")")
