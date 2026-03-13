@@ -1,14 +1,15 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.4
+' StoneAlbumRule.ilogic.vb  –  v3.5
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
-' v3.4: ГЛАВНЫЙ ФИКС — убран глобальный SilentOperation=True из Build()
-'       SilentOperation=True только вокруг Documents.Open (тихое открытие)
-'       Все операции с видами (AddBaseView, Center, Update2)
-'       выполняются без SilentOperation — так виды правильно обновляются
-'       v3.3: рамка/штамп при SilentOperation=False, MAX_AUTO_SCALE=20.
-'       v3.2: полный порт slot-based layout, все Try/Catch развёрнуты.
+' v3.5: ФИКС ViewFitsSlot — через v.Left/v.Top (как VBA DoesViewFitRect)
+'       вместо ненадёжного v.Center.X±Width/2
+'       ФИКС PlaceViewInSlot — вид создаётся сразу в центре слота,
+'       лишнее v.Center=... убрано
+'       v3.4: глобальный SilentOperation убран.
+'       v3.3: MAX_AUTO_SCALE=20, TITLEBLOCK_GAP=0.05.
+'       v3.2: полный порт slot-based layout.
 ' ================================================================
 
 Option Explicit On
@@ -468,7 +469,10 @@ Public Class AlbumBuilder
         Dim cx As Double = (slot.L + slot.R) / 2
         Dim cy As Double = (slot.B + slot.T) / 2
         Dim sc As Double = scaleVal
+        Dim slotW As Double = slot.R - slot.L
+        Dim slotH As Double = slot.T - slot.B
 
+        ' Вид создаётся сразу в центре слота (cx, cy)
         ' Пробуем с уменьшением масштаба (как VBA: sc * 0.97 в цикле)
         Do While sc >= 0.02
             Dim v As DrawingView = Nothing
@@ -486,20 +490,19 @@ Public Class AlbumBuilder
                 Catch
                 End Try
                 _app.ActiveDocument.Update2(True)
-                ' Центрируем
-                v.Center = _app.TransientGeometry.CreatePoint2d(cx, cy)
-                _app.ActiveDocument.Update2(True)
-                ' Проверяем вписание
+                ' Проверяем вписание через Left/Top (как VBA DoesViewFitRect)
                 If ViewFitsSlot(v, slot) Then
+                    Debug.Print("Вид OK sc=" & sc & " Left=" & v.Left & " Top=" & v.Top & " W=" & v.Width & " H=" & v.Height)
                     Return v
                 End If
+                Debug.Print("Вид не впис. sc=" & sc & " Left=" & v.Left & " Top=" & v.Top & " W=" & v.Width & " H=" & v.Height & " slot L=" & slot.L & " R=" & slot.R & " B=" & slot.B & " T=" & slot.T)
                 ' Не вписался — удаляем, уменьшаем масштаб
                 Try
                     v.Delete()
                 Catch
                 End Try
             Catch ex As Exception
-                Debug.Print("WARN: PlaceViewInSlot at scale " & sc & ": " & ex.Message)
+                Debug.Print("WARN PlaceViewInSlot sc=" & sc & ": " & ex.Message)
                 If v IsNot Nothing Then
                     Try
                         v.Delete()
@@ -512,14 +515,17 @@ Public Class AlbumBuilder
         Return Nothing
     End Function
 
-    ' Проверяет что центр+размер вида вписывается в слот
+    ' Проверяет вписание вида в слот через Left/Top (VBA-стиль)
+    ' v.Left = левый край, v.Top = верхний край (Y снизу вверх)
+    ' bounds: Left=v.Left, Right=v.Left+v.Width, Bottom=v.Top-v.Height, Top=v.Top
     Private Function ViewFitsSlot(v As DrawingView, slot As SlotRect) As Boolean
-        Dim cx As Double = v.Center.X
-        Dim cy As Double = v.Center.Y
-        Dim hw As Double = v.Width  / 2.0 + 0.001
-        Dim hh As Double = v.Height / 2.0 + 0.001
-        Return (cx - hw >= slot.L AndAlso cx + hw <= slot.R AndAlso
-                cy - hh >= slot.B AndAlso cy + hh <= slot.T)
+        Dim vL As Double = v.Left
+        Dim vT As Double = v.Top
+        Dim vR As Double = vL + v.Width
+        Dim vB As Double = vT - v.Height
+        Dim eps As Double = 0.001
+        Return (vL >= slot.L - eps AndAlso vR <= slot.R + eps AndAlso
+                vB >= slot.B - eps AndAlso vT <= slot.T + eps)
     End Function
 
     ' SafeArea по реальному TitleBlock.RangeBox (как VBA GetSheetSafeRectCm)
@@ -1102,4 +1108,5 @@ Public NotInheritable Class XlsxReader
     End Function
 
 End Class
+
 
