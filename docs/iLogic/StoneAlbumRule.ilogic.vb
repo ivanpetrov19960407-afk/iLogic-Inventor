@@ -25,13 +25,10 @@ Sub Main()
     Dim workspacePath As String = iProperties.Value("Custom", "AlbumWorkspace")
     Dim sheetTabName As String  = "ALBUM"
 
-    ' Fallback: диалог выбора файла если параметр пустой
+    ' Fallback: запрос пути через InputBox если параметр пустой
     If String.IsNullOrWhiteSpace(excelPath) Then
-        Dim dlg As System.Windows.Forms.OpenFileDialog = New System.Windows.Forms.OpenFileDialog()
-        dlg.Title  = "Выберите Excel с данными альбома"
-        dlg.Filter = "Excel (*.xlsx;*.xlsm;*.xls)|*.xlsx;*.xlsm;*.xls"
-        If dlg.ShowDialog() <> System.Windows.Forms.DialogResult.OK Then Return
-        excelPath = dlg.FileName
+        excelPath = InputBox("Укажите полный путь к Excel-файлу альбома (.xlsx):", "Путь к Excel", "")
+        If String.IsNullOrWhiteSpace(excelPath) Then Return
     End If
 
     If String.IsNullOrWhiteSpace(workspacePath) Then
@@ -873,7 +870,7 @@ Public NotInheritable Class ExcelLoader
         Dim xlBook As Object = Nothing
 
         Try
-            xlApp = CreateObject("Excel.Application")
+            xlApp = System.Activator.CreateInstance(System.Type.GetTypeFromProgID("Excel.Application"))
             xlApp.Visible      = False
             xlApp.DisplayAlerts = False
 
@@ -1027,10 +1024,19 @@ Public NotInheritable Class ExcelLoader
         Dim fileName As String = System.IO.Path.GetFileName(input)
         If Not fileName.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase) Then fileName &= ".ipt"
 
+        ' Рекурсивный поиск: проверяем только прямые вложенные папки (без Directory.EnumerateFiles)
         For Each root As String In {workspace, excelDir}
-            If String.IsNullOrWhiteSpace(root) OrElse Not System.IO.Directory.Exists(root) Then Continue For
-            Dim found As String = System.IO.Directory.EnumerateFiles(root, fileName, System.IO.SearchOption.AllDirectories).FirstOrDefault()
-            If Not String.IsNullOrEmpty(found) Then Return System.IO.Path.GetFullPath(found)
+            If String.IsNullOrWhiteSpace(root) Then Continue For
+            Dim direct As String = System.IO.Path.Combine(root, fileName)
+            If System.IO.File.Exists(direct) Then Return System.IO.Path.GetFullPath(direct)
+            ' Один уровень вложенности
+            Try
+                For Each subDir As String In System.IO.Directory.GetDirectories(root)
+                    Dim sub1 As String = System.IO.Path.Combine(subDir, fileName)
+                    If System.IO.File.Exists(sub1) Then Return System.IO.Path.GetFullPath(sub1)
+                Next
+            Catch
+            End Try
         Next
 
         Return String.Empty
