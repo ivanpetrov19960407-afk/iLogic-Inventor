@@ -5,7 +5,7 @@
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
 ' v3.9: FIX — ps array 0-based (New String(6){}), ps(k) вместо ps(k+1)
 '       AddTitleBlock — убран Nothing (второй аргумент пустой)
-'       4-view layout: LARGE=Front, ISO=IsoTopRight(ShadedWithEdges), SMALL=Top, WIDE=Right
+'       4-view layout: LARGE=Front, ISO=IsoTopRight(Shaded), SMALL=Top, WIDE=Right
 ' v3.8: ГЛАВНЫЙ ФИКС — AddCustomBorder → AddBorder (правильный метод API)
 '       AddCustomBorder не существует в iLogic — ошибка во всех прошлых версиях
 '       sheet.Border/TitleBlock ReadOnly — убраны fallback-присвоения
@@ -390,7 +390,7 @@ Public Class AlbumBuilder
         Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mTop   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation,   DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-        Dim mIso   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedWithEdgesDrawingViewStyle)
+        Dim mIso   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle)
 
         If mFront Is Nothing OrElse mTop Is Nothing OrElse mRight Is Nothing Then
             Debug.Print("WARN: не удалось измерить виды")
