@@ -10,18 +10,17 @@ Option Explicit On
 
 Imports Inventor
 Imports System
-Imports System.Windows.Forms
 
 Sub Main()
     Dim doc As DrawingDocument = TryCast(ThisApplication.ActiveDocument, DrawingDocument)
     If doc Is Nothing Then
-        MessageBox.Show("Откройте .idw документ.", "Ошибка")
+        System.Windows.Forms.MessageBox.Show("Откройте .idw документ.", "Ошибка")
         Return
     End If
 
     Dim sheet As Sheet = doc.ActiveSheet
     If sheet Is Nothing Then
-        MessageBox.Show("Нет активного листа.", "Ошибка")
+        System.Windows.Forms.MessageBox.Show("Нет активного листа.", "Ошибка")
         Return
     End If
 
@@ -36,7 +35,7 @@ Sub Main()
     Dim hMm As Double = doc.UnitsOfMeasure.ConvertUnits(sheet.Height, UnitsTypeEnum.kCentimeterLengthUnits, UnitsTypeEnum.kMillimeterLengthUnits)
 
     If Math.Abs(wMm - 420.0) > 0.5 OrElse Math.Abs(hMm - 297.0) > 0.5 Then
-        MessageBox.Show("Лист не А3: " & FormatNumber(wMm,1) & " × " & FormatNumber(hMm,1) & " мм", "Ошибка")
+        System.Windows.Forms.MessageBox.Show("Лист не А3: " & FormatNumber(wMm,1) & " × " & FormatNumber(hMm,1) & " мм", "Ошибка")
         Return
     End If
 
@@ -48,7 +47,7 @@ Sub Main()
     framer.ApplyBorder(sheet, borderDef)
     framer.ApplyTitleBlock(sheet, titleDef, GetDefaultPrompts())
 
-    MessageBox.Show("Рамка СПДС А3 и штамп Форма 3 применены.", "Готово")
+    System.Windows.Forms.MessageBox.Show("Рамка СПДС А3 и штамп Форма 3 применены.", "Готово")
 End Sub
 
 Private Function GetDefaultPrompts() As Dictionary(Of String, String)
@@ -86,7 +85,10 @@ Public Class SpdsFramer
     ' --- Рамка ---
     Public Function EnsureBorderDef(doc As DrawingDocument) As BorderDefinition
         Dim def As BorderDefinition = Nothing
-        Try : def = doc.BorderDefinitions.Item(BORDER_NAME) : Catch : End Try
+        Try
+            def = doc.BorderDefinitions.Item(BORDER_NAME)
+        Catch
+        End Try
 
         If def Is Nothing Then
             _app.SilentOperation = True
@@ -99,7 +101,10 @@ Public Class SpdsFramer
         Try
             ' Очистить старую геометрию
             For i As Integer = sk.SketchLines.Count To 1 Step -1
-                Try : sk.SketchLines.Item(i).Delete() : Catch : End Try
+                Try
+                    sk.SketchLines.Item(i).Delete()
+                Catch
+                End Try
             Next
 
             ' Микро-якоря для фиксации листа
@@ -120,7 +125,10 @@ Public Class SpdsFramer
     End Function
 
     Public Sub ApplyBorder(sheet As Sheet, def As BorderDefinition)
-        Try : If sheet.Border IsNot Nothing Then sheet.Border.Delete() : Catch : End Try
+        Try
+            If sheet.Border IsNot Nothing Then sheet.Border.Delete()
+        Catch
+        End Try
         _app.SilentOperation = True
         sheet.AddCustomBorder(def)   ' ВАЖНО: AddCustomBorder, не AddBorder
         _app.SilentOperation = False
@@ -129,7 +137,10 @@ Public Class SpdsFramer
     ' --- Штамп ---
     Public Function EnsureTitleBlockDef(doc As DrawingDocument) As TitleBlockDefinition
         Dim def As TitleBlockDefinition = Nothing
-        Try : def = doc.TitleBlockDefinitions.Item(TB_NAME) : Catch : End Try
+        Try
+            def = doc.TitleBlockDefinitions.Item(TB_NAME)
+        Catch
+        End Try
 
         If def Is Nothing Then
             _app.SilentOperation = True
@@ -142,10 +153,16 @@ Public Class SpdsFramer
         Try
             ' Полная очистка скетча (линии + текст)
             For i As Integer = sk.TextBoxes.Count To 1 Step -1
-                Try : sk.TextBoxes.Item(i).Delete() : Catch : End Try
+                Try
+                    sk.TextBoxes.Item(i).Delete()
+                Catch
+                End Try
             Next
             For i As Integer = sk.SketchLines.Count To 1 Step -1
-                Try : sk.SketchLines.Item(i).Delete() : Catch : End Try
+                Try
+                    sk.SketchLines.Item(i).Delete()
+                Catch
+                End Try
             Next
 
             DrawGeometry(doc, sk)
@@ -158,7 +175,10 @@ Public Class SpdsFramer
     End Function
 
     Public Sub ApplyTitleBlock(sheet As Sheet, def As TitleBlockDefinition, prompts As Dictionary(Of String, String))
-        Try : If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete() : Catch : End Try
+        Try
+            If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete()
+        Catch
+        End Try
 
         Dim order As String() = {"CODE","PROJECT_NAME","DRAWING_NAME","ORG_NAME","STAGE","SHEET","SHEETS"}
         Dim ps(8) As String
@@ -234,12 +254,12 @@ Public Class SpdsFramer
         sk.SketchLines.AddByTwoPoints(P(x0+Cm(doc,xFr), y0+Cm(doc,atMm)), P(x0+Cm(doc,xTo), y0+Cm(doc,atMm)))
     End Sub
     Private Sub Lbl(doc As DrawingDocument, sk As DrawingSketch, x0 As Double, y0 As Double, l As Double, b As Double, r As Double, t As Double, text As String)
-        Dim tb As TextBox = sk.TextBoxes.AddByRectangle(P(x0+Cm(doc,l), y0+Cm(doc,b)), P(x0+Cm(doc,r), y0+Cm(doc,t)), text)
+        Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x0+Cm(doc,l), y0+Cm(doc,b)), P(x0+Cm(doc,r), y0+Cm(doc,t)), text)
         tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
         tb.VerticalJustification   = VerticalTextAlignmentEnum.kAlignTextMiddle
     End Sub
     Private Sub Prm(doc As DrawingDocument, sk As DrawingSketch, x0 As Double, y0 As Double, l As Double, b As Double, r As Double, t As Double, name As String)
-        Dim tb As TextBox = sk.TextBoxes.AddByRectangle(P(x0+Cm(doc,l), y0+Cm(doc,b)), P(x0+Cm(doc,r), y0+Cm(doc,t)), "<Prompt>" & name & "</Prompt>")
+        Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x0+Cm(doc,l), y0+Cm(doc,b)), P(x0+Cm(doc,r), y0+Cm(doc,t)), "<Prompt>" & name & "</Prompt>")
         tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
         tb.VerticalJustification   = VerticalTextAlignmentEnum.kAlignTextMiddle
     End Sub
