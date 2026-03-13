@@ -1,12 +1,14 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.1
+' StoneAlbumRule.ilogic.vb  –  v3.2
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
-' v3.1: все однострочные Try/Catch развёрнуты (iLogic не поддерживает
-'       Try : код : Catch : End Try внутри классов);
-'       "Alias" → "MapAlias" (зарезервировано);
-'       параметр "shared" → "sst" (зарезервировано).
+' v3.2: полный порт slot-based layout из VBA (SMALL/WIDE/LARGE/ISO)
+'       каждый вид вписывается в свой прямоугольный слот индивидуально.
+'       SafeArea считается по реальному TitleBlock.RangeBox.
+'       Все Try/Catch развёрнуты (iLogic не поддерживает однострочный
+'       Try:код:Catch:End Try внутри классов).
+'       "Alias"→"MapAlias", параметр "shared"→"sst".
 ' ================================================================
 
 Option Explicit On
@@ -16,7 +18,6 @@ Imports System
 Imports System.Collections.Generic
 
 Sub Main()
-    ' ── 1. Читаем сохранённые пути ──
     Dim excelPath     As String = String.Empty
     Dim workspacePath As String = String.Empty
     Dim sheetTabName  As String = "ALBUM"
@@ -34,7 +35,6 @@ Sub Main()
     Catch
     End Try
 
-    ' ── 2. Диалог (всегда, с текущими значениями как дефолт) ──
     Dim newExcel As String = InputBox(
         "Путь к Excel-файлу альбома (.xlsx):" & vbCrLf &
         "(оставьте как есть или введите новый)",
@@ -46,7 +46,6 @@ Sub Main()
         Return
     End If
 
-    ' workspace: из проекта Inventor, затем рядом с Excel
     If String.IsNullOrWhiteSpace(workspacePath) Then
         Try
             Dim proj As Object = ThisApplication.DesignProjectManager.ActiveDesignProject
@@ -69,7 +68,6 @@ Sub Main()
     If newSheet Is Nothing Then Return
     If Not String.IsNullOrWhiteSpace(newSheet) Then sheetTabName = newSheet.Trim()
 
-    ' ── 3. Сохраняем пути обратно ──
     Try
         iProperties.Value("Custom", "AlbumExcel") = excelPath
     Catch
@@ -83,7 +81,6 @@ Sub Main()
     Catch
     End Try
 
-    ' ── 4. Запуск ──
     Dim doc As DrawingDocument = TryCast(ThisApplication.ActiveDocument, DrawingDocument)
     If doc Is Nothing Then
         System.Windows.Forms.MessageBox.Show("Откройте .idw документ.", "Ошибка")
@@ -95,13 +92,13 @@ Sub Main()
 End Sub
 
 ' ================================================================
-'  BUILDER  (аналог BuildOrUpdateAlbumCore из VBA)
+'  BUILDER
 ' ================================================================
 Public Class AlbumBuilder
 
     Private ReadOnly _app As Inventor.Application
 
-    ' Константы геометрии А3 СПДС
+    ' Геометрия А3 СПДС
     Private Const A3_W_MM       As Double = 420.0
     Private Const A3_H_MM       As Double = 297.0
     Private Const FRAME_L_MM    As Double = 20.0
@@ -112,16 +109,28 @@ Public Class AlbumBuilder
     Private Const TB_NAME       As String = "RKM_SPDS_A3_FORM3_V17"
     Private Const SHEET_PFX     As String = "ALB_"
 
-    ' Масштабный ряд (от крупного к мелкому)
-    Private ReadOnly SCALES As Double() = {
-        5.0, 4.0, 3.0, 2.5, 2.0, 1.5, 1.25, 1.0,
-        0.75, 0.5, 0.4, 0.25, 0.2, 0.1, 0.05}
+    ' Параметры layout (точно из VBA RKM_IdwAlbum.bas)
+    Private Const GAP_MM              As Double = 8.0
+    Private Const LAYOUT_PAD_MM       As Double = 6.0
+    Private Const SAFE_LEFT_RATIO     As Double = 0.05
+    Private Const SAFE_RIGHT_RATIO    As Double = 0.03
+    Private Const SAFE_TOP_RATIO      As Double = 0.04
+    Private Const SAFE_BOTTOM_RATIO   As Double = 0.03
+    Private Const TITLEBLOCK_GAP_RATIO As Double = 0.015
+    Private Const TECH_TOP_BAND_RATIO  As Double = 0.31
+    Private Const TECH_RIGHT_COL_RATIO As Double = 0.34
+    Private Const TECH_SMALL_SLOT_RATIO As Double = 0.38
+    Private Const ORTHO_SCALE_MARGIN   As Double = 0.95
+    Private Const ISO_SCALE_MARGIN     As Double = 0.9
+    Private Const MAX_AUTO_SCALE       As Double = 8.0
+    Private Const PROBE_SCALE          As Double = 0.1
+    Private Const SLOT_CONTENT_PAD_MM  As Double = 2.0
+    Private Const CAPTION_CLEAR_TOP_MM As Double = 7.0
 
     Public Sub New(app As Inventor.Application)
         _app = app
     End Sub
 
-    ' ── Главная точка входа ──
     Public Sub Build(doc As DrawingDocument, excelPath As String, workspacePath As String, sheetTab As String)
         Dim items As List(Of AlbumItem) = XlsxReader.Load(excelPath, workspacePath, sheetTab)
         If items.Count = 0 Then
@@ -136,17 +145,11 @@ Public Class AlbumBuilder
 
         _app.SilentOperation = True
         Try
-            ' Рамка и штамп — один раз для всего документа
             Dim borderDef As BorderDefinition    = EnsureBorder(doc)
             Dim tbDef     As TitleBlockDefinition = EnsureTitleBlock(doc)
-
-            ' Шаблонный лист (первый не-альбомный)
             Dim tmplSheet As Sheet = ResolveTemplateSheet(doc)
-
-            ' Удаляем старые ALB_ листы
             PurgeAlbumSheets(doc, tmplSheet)
 
-            ' Строим по одному листу
             For i As Integer = 0 To items.Count - 1
                 Dim item As AlbumItem = items(i)
                 If String.IsNullOrWhiteSpace(item.Prompts("SHEET"))  Then item.Prompts("SHEET")  = (i + 1).ToString()
@@ -156,7 +159,6 @@ Public Class AlbumBuilder
                 If ok Then okCount += 1 Else failCount += 1
             Next
 
-            ' Активируем шаблонный лист обратно
             If tmplSheet IsNot Nothing Then
                 Try
                     tmplSheet.Activate()
@@ -189,7 +191,6 @@ Public Class AlbumBuilder
         Dim openedHere As Boolean = False
 
         Try
-            ' Создаём лист
             Dim sheetName As String = SHEET_PFX & System.IO.Path.GetFileNameWithoutExtension(item.ModelPath)
             sheet = doc.Sheets.Add(
                 DrawingSheetSizeEnum.kA3DrawingSheetSize,
@@ -254,8 +255,8 @@ Public Class AlbumBuilder
                 Return False
             End If
 
-            ' Виды
-            Dim viewsOk As Boolean = PlaceViews(doc, sheet, modelDoc)
+            ' Виды через slot-based layout
+            Dim viewsOk As Boolean = PlaceViewsSlotBased(doc, sheet, modelDoc)
             doc.Update2(True)
 
             If sheet.DrawingViews.Count < 3 Then
@@ -289,152 +290,274 @@ Public Class AlbumBuilder
     End Function
 
     ' ================================================================
-    '  ВИДЫ  — измеряем через probe-вид, подбираем масштаб
+    '  SLOT-BASED LAYOUT  (точный порт GetTechSlotRects / PlaceTechViewLayout)
     ' ================================================================
-    Private Function PlaceViews(doc As DrawingDocument, sheet As Sheet, modelDoc As Document) As Boolean
-        ' Зона для видов = лист минус штамп и поля
-        Dim shW As Double = sheet.Width
-        Dim shH As Double = sheet.Height
+    Private Function PlaceViewsSlotBased(doc As DrawingDocument, sheet As Sheet, modelDoc As Document) As Boolean
+        ' 1. Безопасная зона
+        Dim safeRect As SlotRect = GetSheetSafeRect(sheet)
 
-        Dim padL As Double = MmToCm(doc, FRAME_L_MM + 5)
-        Dim padO As Double = MmToCm(doc, FRAME_O_MM + 5)
-        Dim tbW  As Double = MmToCm(doc, TB_W_MM)
-        Dim tbH  As Double = MmToCm(doc, TB_H_MM)
+        ' 2. Сжимаем на LAYOUT_PAD_MM
+        Dim pad   As Double = Cm(doc, LAYOUT_PAD_MM)
+        Dim pRect As SlotRect = InsetRect(safeRect, pad)
 
-        ' Доступная зона
-        Dim zoneX1 As Double = padL
-        Dim zoneY1 As Double = padO + tbH
-        Dim zoneX2 As Double = shW - padO
-        Dim zoneY2 As Double = shH - padO
+        ' 3. Делим на 4 слота (как VBA GetTechSlotRects)
+        Dim gap   As Double = Cm(doc, GAP_MM)
+        Dim splitX As Double = pRect.R - RectW(pRect) * TECH_RIGHT_COL_RATIO
+        Dim splitY As Double = pRect.T - RectH(pRect) * TECH_TOP_BAND_RATIO
+        Dim smallRight As Double = pRect.L + (splitX - pRect.L) * TECH_SMALL_SLOT_RATIO
 
-        Dim zoneW As Double = zoneX2 - zoneX1
-        Dim zoneH As Double = zoneY2 - zoneY1
+        ' rawSlots
+        Dim slotSmall As SlotRect = New SlotRect(pRect.L,        smallRight - gap, splitY + gap, pRect.T)
+        Dim slotWide  As SlotRect = New SlotRect(smallRight + gap, pRect.R,        splitY + gap, pRect.T)
+        Dim slotLarge As SlotRect = New SlotRect(pRect.L,        splitX - gap,    pRect.B,       splitY - gap)
+        Dim slotIso   As SlotRect = New SlotRect(splitX + gap,   pRect.R,         pRect.B,       splitY - gap)
 
-        ' Измеряем размеры вида при масштабе 0.1 через probe
-        Dim probeScale As Double = 0.1
-        Dim probeView  As DrawingView = Nothing
-        Dim natW As Double = 0
-        Dim natH As Double = 0
-        Try
-            probeView = sheet.DrawingViews.AddBaseView(
-                modelDoc,
-                _app.TransientGeometry.CreatePoint2d(shW / 2, shH / 2),
-                probeScale,
-                ViewOrientationTypeEnum.kFrontViewOrientation,
-                DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-            natW = probeView.Width  / probeScale
-            natH = probeView.Height / probeScale
-        Catch ex As Exception
-            Debug.Print("WARN: probe view failed: " & ex.Message)
+        ' contentSlots (с паддингом и отступом на подпись)
+        Dim cPad    As Double = Cm(doc, SLOT_CONTENT_PAD_MM)
+        Dim capClear As Double = Cm(doc, CAPTION_CLEAR_TOP_MM)
+
+        Dim csSmall As SlotRect = ContentSlot(slotSmall, cPad, capClear)
+        Dim csWide  As SlotRect = ContentSlot(slotWide,  cPad, capClear)
+        Dim csLarge As SlotRect = ContentSlot(slotLarge, cPad, capClear)
+        Dim csIso   As SlotRect = ContentSlot(slotIso,   cPad, cPad)    ' ISO — без подписи
+
+        ' 4. Измеряем все ориентации через probe-виды
+        Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
+        Dim mTop   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation,   DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
+        Dim mLeft  As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kLeftViewOrientation,  DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
+        Dim mIso   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle)
+
+        If mFront Is Nothing OrElse mTop Is Nothing OrElse mLeft Is Nothing Then
+            Debug.Print("WARN: не удалось измерить виды")
             Return False
-        Finally
-            If probeView IsNot Nothing Then
-                Try
-                    probeView.Delete()
-                Catch
-                End Try
-            End If
-        End Try
+        End If
 
-        If natW <= 0 OrElse natH <= 0 Then Return False
+        ' 5. Подбираем масштабы для двух кандидатов: [FRONT,TOP,LEFT] и [FRONT,LEFT,TOP]
+        Dim bestSmallScale As Double = 0
+        Dim bestMainScale  As Double = 0
+        Dim bestIsoScale   As Double = 0
+        Dim bestSmallMeasure As ViewMeasure = Nothing
+        Dim bestWideMeasure  As ViewMeasure = Nothing
+        Dim bestLargeMeasure As ViewMeasure = Nothing
 
-        ' Подбираем масштаб
-        Dim gap As Double = MmToCm(doc, 8)
-        Dim selectedScale As Double = SCALES(SCALES.Length - 1)
+        Dim candidates As ViewMeasure()() = {
+            New ViewMeasure() {mFront, mTop,  mLeft},
+            New ViewMeasure() {mFront, mLeft, mTop}
+        }
 
-        For Each sc As Double In SCALES
-            Dim frontW As Double = natW * sc
-            Dim frontH As Double = natH * sc
-            If frontW + natH * sc + gap <= zoneW * 1.05 AndAlso
-               frontH + natH * sc * 0.5 + gap <= zoneH * 1.05 Then
-                selectedScale = sc
-                Exit For
+        For Each cand As ViewMeasure() In candidates
+            Dim sScale As Double = ScaleToFit(csSmall, cand(0), ORTHO_SCALE_MARGIN)
+            Dim wScale As Double = ScaleToFit(csWide,  cand(1), ORTHO_SCALE_MARGIN)
+            Dim lScale As Double = ScaleToFit(csLarge, cand(2), ORTHO_SCALE_MARGIN)
+            If sScale > 0 AndAlso wScale > 0 AndAlso lScale > 0 Then
+                Dim mainSc As Double = Math.Min(wScale, lScale)
+                If mainSc > bestMainScale Then
+                    bestMainScale  = mainSc
+                    bestSmallScale = sScale
+                    bestSmallMeasure = cand(0)
+                    bestWideMeasure  = cand(1)
+                    bestLargeMeasure = cand(2)
+                End If
             End If
         Next
 
-        ' Размещаем: Front, Top, Side, Iso
-        Dim frontCX As Double = zoneX1 + (zoneW * 0.28)
-        Dim frontCY As Double = zoneY1 + (zoneH * 0.38)
-
-        Dim baseView  As DrawingView = Nothing
-        Dim topView   As DrawingView = Nothing
-        Dim sideView  As DrawingView = Nothing
-        Dim isoView   As DrawingView = Nothing
-
-        Try
-            ' Front view
-            baseView = sheet.DrawingViews.AddBaseView(
-                modelDoc,
-                _app.TransientGeometry.CreatePoint2d(frontCX, frontCY),
-                selectedScale,
-                ViewOrientationTypeEnum.kFrontViewOrientation,
-                DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-            Try
-                baseView.ShowLabel = False
-            Catch
-            End Try
-
-            ' Top — проецируем вверх
-            topView = sheet.DrawingViews.AddProjectedView(
-                baseView,
-                _app.TransientGeometry.CreatePoint2d(frontCX, frontCY + natH * selectedScale + gap),
-                DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-            Try
-                topView.ShowLabel = False
-            Catch
-            End Try
-
-            ' Right/Left side — проецируем вправо
-            sideView = sheet.DrawingViews.AddProjectedView(
-                baseView,
-                _app.TransientGeometry.CreatePoint2d(frontCX + natW * selectedScale + gap, frontCY),
-                DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-            Try
-                sideView.ShowLabel = False
-            Catch
-            End Try
-
-            ' Iso — тонированный, правый нижний угол зоны
-            Dim isoCX As Double = zoneX1 + zoneW * 0.78
-            Dim isoCY As Double = zoneY1 + zoneH * 0.30
-            Try
-                isoView = sheet.DrawingViews.AddBaseView(
-                    modelDoc,
-                    _app.TransientGeometry.CreatePoint2d(isoCX, isoCY),
-                    selectedScale * 0.75,
-                    ViewOrientationTypeEnum.kIsoTopRightViewOrientation,
-                    DrawingViewStyleEnum.kShadedDrawingViewStyle)
-                Try
-                    isoView.ShowLabel = False
-                Catch
-                End Try
-            Catch
-            End Try
-
-            Return True
-
-        Catch ex As Exception
-            Debug.Print("ERROR: PlaceViews: " & ex.Message)
-            If sideView IsNot Nothing Then
-                Try
-                    sideView.Delete()
-                Catch
-                End Try
-            End If
-            If topView IsNot Nothing Then
-                Try
-                    topView.Delete()
-                Catch
-                End Try
-            End If
-            If baseView IsNot Nothing Then
-                Try
-                    baseView.Delete()
-                Catch
-                End Try
-            End If
+        If bestMainScale <= 0 OrElse bestSmallScale <= 0 Then
+            Debug.Print("WARN: не удалось подобрать масштаб")
             Return False
+        End If
+
+        If mIso IsNot Nothing Then
+            bestIsoScale = ScaleToFit(csIso, mIso, ISO_SCALE_MARGIN)
+        End If
+
+        ' 6. Размещаем виды в слоты
+        Dim v1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, bestSmallMeasure, bestSmallScale, csSmall)
+        Dim v2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, bestWideMeasure,  bestMainScale,  csWide)
+        Dim v3 As DrawingView = PlaceViewInSlot(sheet, modelDoc, bestLargeMeasure, bestMainScale,  csLarge)
+
+        If v1 Is Nothing OrElse v2 Is Nothing OrElse v3 Is Nothing Then
+            Debug.Print("WARN: не все основные виды размещены")
+            If v1 Is Nothing AndAlso v2 Is Nothing AndAlso v3 Is Nothing Then Return False
+        End If
+
+        ' ISO
+        If bestIsoScale > 0 AndAlso mIso IsNot Nothing Then
+            Try
+                Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, mIso, bestIsoScale, csIso)
+            Catch
+            End Try
+        End If
+
+        Return True
+    End Function
+
+    ' Создаёт probe-вид, замеряет размеры при масштабе 1:1, удаляет
+    Private Function MeasureView(sheet As Sheet, modelDoc As Document,
+                                 orient As ViewOrientationTypeEnum,
+                                 style As DrawingViewStyleEnum) As ViewMeasure
+        Dim probe As DrawingView = Nothing
+        Try
+            probe = sheet.DrawingViews.AddBaseView(
+                modelDoc,
+                _app.TransientGeometry.CreatePoint2d(sheet.Width / 2, sheet.Height / 2),
+                PROBE_SCALE, orient, style)
+            If probe Is Nothing Then Return Nothing
+            _app.ActiveDocument.Update2(True)
+            Dim m As New ViewMeasure()
+            m.UnitW = probe.Width  / PROBE_SCALE
+            m.UnitH = probe.Height / PROBE_SCALE
+            m.Orient = orient
+            m.Style  = style
+            If m.UnitW < 0.0001 AndAlso m.UnitH < 0.0001 Then Return Nothing
+            Return m
+        Catch ex As Exception
+            Debug.Print("WARN: MeasureView failed: " & ex.Message)
+            Return Nothing
+        Finally
+            If probe IsNot Nothing Then
+                Try
+                    probe.Delete()
+                Catch
+                End Try
+            End If
         End Try
+    End Function
+
+    ' Подбирает масштаб вписания вида в слот (учитывает поворот на 90°)
+    Private Function ScaleToFit(slot As SlotRect, m As ViewMeasure, margin As Double) As Double
+        If m Is Nothing Then Return 0
+        Dim sw As Double = slot.R - slot.L
+        Dim sh As Double = slot.T - slot.B
+        If sw <= 0 OrElse sh <= 0 Then Return 0
+        Dim sc0 As Double = 0
+        Dim sc90 As Double = 0
+        If m.UnitW > 0.0001 AndAlso m.UnitH > 0.0001 Then
+            sc0 = Math.Min(sw / m.UnitW, sh / m.UnitH) * margin
+        End If
+        ' Попробуем поворот 90°
+        If m.UnitH > 0.0001 AndAlso m.UnitW > 0.0001 Then
+            sc90 = Math.Min(sw / m.UnitH, sh / m.UnitW) * margin
+        End If
+        Dim best As Double = Math.Max(sc0, sc90)
+        If best > MAX_AUTO_SCALE Then best = MAX_AUTO_SCALE
+        If best < 0.02 Then Return 0
+        Return best
+    End Function
+
+    ' Размещает вид в центр слота, уменьшает масштаб если не влезает
+    Private Function PlaceViewInSlot(sheet As Sheet, modelDoc As Document,
+                                     m As ViewMeasure, scaleVal As Double,
+                                     slot As SlotRect) As DrawingView
+        If m Is Nothing Then Return Nothing
+        Dim cx As Double = (slot.L + slot.R) / 2
+        Dim cy As Double = (slot.B + slot.T) / 2
+        Dim sc As Double = scaleVal
+
+        ' Пробуем с уменьшением масштаба (как VBA: sc * 0.97 в цикле)
+        Do While sc >= 0.02
+            Dim v As DrawingView = Nothing
+            Try
+                v = sheet.DrawingViews.AddBaseView(
+                    modelDoc,
+                    _app.TransientGeometry.CreatePoint2d(cx, cy),
+                    sc, m.Orient, m.Style)
+                If v Is Nothing Then
+                    sc = sc * 0.97
+                    Continue Do
+                End If
+                Try
+                    v.ShowLabel = False
+                Catch
+                End Try
+                _app.ActiveDocument.Update2(True)
+                ' Центрируем
+                v.Center = _app.TransientGeometry.CreatePoint2d(cx, cy)
+                _app.ActiveDocument.Update2(True)
+                ' Проверяем вписание
+                If ViewFitsSlot(v, slot) Then
+                    Return v
+                End If
+                ' Не вписался — удаляем, уменьшаем масштаб
+                Try
+                    v.Delete()
+                Catch
+                End Try
+            Catch ex As Exception
+                Debug.Print("WARN: PlaceViewInSlot at scale " & sc & ": " & ex.Message)
+                If v IsNot Nothing Then
+                    Try
+                        v.Delete()
+                    Catch
+                    End Try
+                End If
+            End Try
+            sc = sc * 0.97
+        Loop
+        Return Nothing
+    End Function
+
+    ' Проверяет что центр+размер вида вписывается в слот
+    Private Function ViewFitsSlot(v As DrawingView, slot As SlotRect) As Boolean
+        Dim cx As Double = v.Center.X
+        Dim cy As Double = v.Center.Y
+        Dim hw As Double = v.Width  / 2.0 + 0.001
+        Dim hh As Double = v.Height / 2.0 + 0.001
+        Return (cx - hw >= slot.L AndAlso cx + hw <= slot.R AndAlso
+                cy - hh >= slot.B AndAlso cy + hh <= slot.T)
+    End Function
+
+    ' SafeArea по реальному TitleBlock.RangeBox (как VBA GetSheetSafeRectCm)
+    Private Function GetSheetSafeRect(sheet As Sheet) As SlotRect
+        Dim w As Double = sheet.Width
+        Dim h As Double = sheet.Height
+
+        Dim wL As Double = w * SAFE_LEFT_RATIO
+        Dim wR As Double = w * (1.0 - SAFE_RIGHT_RATIO)
+        Dim wB As Double = h * SAFE_BOTTOM_RATIO
+        Dim wT As Double = h * (1.0 - SAFE_TOP_RATIO)
+
+        ' Учитываем реальный TitleBlock
+        Try
+            If sheet.TitleBlock IsNot Nothing Then
+                Dim rb As Box2d = sheet.TitleBlock.RangeBox
+                If rb IsNot Nothing Then
+                    Dim tbGapY As Double = h * TITLEBLOCK_GAP_RATIO
+                    If rb.MaxPoint.Y + tbGapY > wB Then
+                        wB = rb.MaxPoint.Y + tbGapY
+                    End If
+                End If
+            End If
+        Catch
+        End Try
+
+        ' Fallback если зона вырождена
+        If wT <= wB + h * 0.2 Then
+            wB = h * 0.18
+            wT = h * 0.94
+        End If
+
+        Return New SlotRect(wL, wR, wB, wT)
+    End Function
+
+    ' Слот с учётом отступа на подпись сверху
+    Private Function ContentSlot(raw As SlotRect, padCm As Double, topClear As Double) As SlotRect
+        Dim t As Double = raw.T - topClear
+        Dim b As Double = raw.B + padCm
+        If t <= b + padCm Then
+            t = raw.T - padCm
+            b = raw.B + padCm
+        End If
+        Return New SlotRect(raw.L + padCm, raw.R - padCm, b, t)
+    End Function
+
+    Private Function InsetRect(r As SlotRect, d As Double) As SlotRect
+        Return New SlotRect(r.L + d, r.R - d, r.B + d, r.T - d)
+    End Function
+    Private Function RectW(r As SlotRect) As Double
+        Return r.R - r.L
+    End Function
+    Private Function RectH(r As SlotRect) As Double
+        Return r.T - r.B
     End Function
 
     ' ================================================================
@@ -455,21 +578,16 @@ Public Class AlbumBuilder
         Dim sk As DrawingSketch = Nothing
         def.Edit(sk)
         Try
-            ' Очистка
             For i As Integer = sk.SketchLines.Count To 1 Step -1
                 Try
                     sk.SketchLines.Item(i).Delete()
                 Catch
                 End Try
             Next
-
-            ' Микро-якоря
             sk.SketchLines.AddByTwoPoints(P(0,0), P(0.0001, 0.0001))
             sk.SketchLines.AddByTwoPoints(
                 P(Cm(doc, A3_W_MM), Cm(doc, A3_H_MM)),
                 P(Cm(doc, A3_W_MM) - 0.0001, Cm(doc, A3_H_MM) - 0.0001))
-
-            ' Внутренняя рамка
             sk.SketchLines.AddAsTwoPointRectangle(
                 P(Cm(doc, FRAME_L_MM), Cm(doc, FRAME_O_MM)),
                 P(Cm(doc, A3_W_MM - FRAME_O_MM), Cm(doc, A3_H_MM - FRAME_O_MM)))
@@ -612,12 +730,29 @@ Public Class AlbumBuilder
         If doc Is Nothing Then Return mm * 0.1
         Return doc.UnitsOfMeasure.ConvertUnits(mm, UnitsTypeEnum.kMillimeterLengthUnits, UnitsTypeEnum.kCentimeterLengthUnits)
     End Function
-    Private Function MmToCm(doc As DrawingDocument, mm As Double) As Double
-        Return Cm(doc, mm)
-    End Function
     Private Function P(x As Double, y As Double) As Point2d
         Return _app.TransientGeometry.CreatePoint2d(x, y)
     End Function
+
+    ' ================================================================
+    '  ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ
+    ' ================================================================
+    Public Class SlotRect
+        Public L As Double
+        Public R As Double
+        Public B As Double
+        Public T As Double
+        Public Sub New(l As Double, r As Double, b As Double, t As Double)
+            Me.L = l : Me.R = r : Me.B = b : Me.T = t
+        End Sub
+    End Class
+
+    Public Class ViewMeasure
+        Public UnitW  As Double
+        Public UnitH  As Double
+        Public Orient As ViewOrientationTypeEnum
+        Public Style  As DrawingViewStyleEnum
+    End Class
 
     Public Class AlbumItem
         Public ModelPath As String = String.Empty
@@ -634,7 +769,6 @@ Public NotInheritable Class XlsxReader
     Public Shared Function Load(excelPath As String, workspacePath As String, sheetTab As String) As List(Of AlbumBuilder.AlbumItem)
         Dim result As New List(Of AlbumBuilder.AlbumItem)()
         Try
-            ' Загружаем System.IO.Compression через Reflection
             Dim asmComp As System.Reflection.Assembly = Nothing
             Try
                 asmComp = System.Reflection.Assembly.Load("System.IO.Compression, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
@@ -878,7 +1012,6 @@ Public NotInheritable Class XlsxReader
             Case "SHEET","ЛИСТ"                                       : Return "SHEET"
             Case "SHEETS","ЛИСТОВ"                                    : Return "SHEETS"
         End Select
-        ' Транслитерация
         Dim src As String() = {"А","Б","В","Г","Д","Е","Ё","Ж","З","И","Й","К","Л","М","Н","О","П","Р","С","Т","У","Ф","Х","Ц","Ч","Ш","Щ","Ъ","Ы","Ь","Э","Ю","Я"}
         Dim dst As String() = {"A","B","V","G","D","E","E","ZH","Z","I","Y","K","L","M","N","O","P","R","S","T","U","F","H","C","CH","SH","SCH","","Y","","E","YU","YA"}
         For i As Integer = 0 To src.Length - 1
