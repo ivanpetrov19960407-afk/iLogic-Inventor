@@ -1028,8 +1028,8 @@ Public NotInheritable Class ExcelLoader
         If Not fileName.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase) Then fileName &= ".ipt"
 
         For Each root As String In {workspace, excelDir}
-            If String.IsNullOrWhiteSpace(root) OrElse Not Directory.Exists(root) Then Continue For
-            Dim found As String = Directory.EnumerateFiles(root, fileName, SearchOption.AllDirectories).FirstOrDefault()
+            If String.IsNullOrWhiteSpace(root) OrElse Not System.IO.Directory.Exists(root) Then Continue For
+            Dim found As String = System.IO.Directory.EnumerateFiles(root, fileName, System.IO.SearchOption.AllDirectories).FirstOrDefault()
             If Not String.IsNullOrEmpty(found) Then Return System.IO.Path.GetFullPath(found)
         Next
 
