@@ -1,8 +1,12 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.0
+' StoneAlbumRule.ilogic.vb  –  v3.1
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.1: все однострочные Try/Catch развёрнуты (iLogic не поддерживает
+'       Try : код : Catch : End Try внутри классов);
+'       "Alias" → "MapAlias" (зарезервировано);
+'       параметр "shared" → "sst" (зарезервировано).
 ' ================================================================
 
 Option Explicit On
@@ -10,7 +14,6 @@ Option Explicit On
 Imports Inventor
 Imports System
 Imports System.Collections.Generic
-' Imports System.IO.Compression -- не используется напрямую, загружается через Reflection
 
 Sub Main()
     ' ── 1. Читаем сохранённые пути ──
@@ -18,9 +21,18 @@ Sub Main()
     Dim workspacePath As String = String.Empty
     Dim sheetTabName  As String = "ALBUM"
 
-    Try : excelPath     = iProperties.Value("Custom", "AlbumExcel")     : Catch : End Try
-    Try : workspacePath = iProperties.Value("Custom", "AlbumWorkspace") : Catch : End Try
-    Try : sheetTabName  = iProperties.Value("Custom", "AlbumSheet")     : Catch : End Try
+    Try
+        excelPath = iProperties.Value("Custom", "AlbumExcel")
+    Catch
+    End Try
+    Try
+        workspacePath = iProperties.Value("Custom", "AlbumWorkspace")
+    Catch
+    End Try
+    Try
+        sheetTabName = iProperties.Value("Custom", "AlbumSheet")
+    Catch
+    End Try
 
     ' ── 2. Диалог (всегда, с текущими значениями как дефолт) ──
     Dim newExcel As String = InputBox(
@@ -58,9 +70,18 @@ Sub Main()
     If Not String.IsNullOrWhiteSpace(newSheet) Then sheetTabName = newSheet.Trim()
 
     ' ── 3. Сохраняем пути обратно ──
-    Try : iProperties.Value("Custom", "AlbumExcel")     = excelPath     : Catch : End Try
-    Try : iProperties.Value("Custom", "AlbumWorkspace") = workspacePath : Catch : End Try
-    Try : iProperties.Value("Custom", "AlbumSheet")     = sheetTabName  : Catch : End Try
+    Try
+        iProperties.Value("Custom", "AlbumExcel") = excelPath
+    Catch
+    End Try
+    Try
+        iProperties.Value("Custom", "AlbumWorkspace") = workspacePath
+    Catch
+    End Try
+    Try
+        iProperties.Value("Custom", "AlbumSheet") = sheetTabName
+    Catch
+    End Try
 
     ' ── 4. Запуск ──
     Dim doc As DrawingDocument = TryCast(ThisApplication.ActiveDocument, DrawingDocument)
@@ -89,11 +110,10 @@ Public Class AlbumBuilder
     Private Const TB_H_MM       As Double = 55.0
     Private Const BORDER_NAME   As String = "RKM_SPDS_A3_BORDER_V12"
     Private Const TB_NAME       As String = "RKM_SPDS_A3_FORM3_V17"
-    Private Const SHEET_FMT     As String = "RKM_ALBUM_MASTER_FMT"
     Private Const SHEET_PFX     As String = "ALB_"
 
     ' Масштабный ряд (от крупного к мелкому)
-    Private Shared ReadOnly SCALES As Double() = {
+    Private ReadOnly SCALES As Double() = {
         5.0, 4.0, 3.0, 2.5, 2.0, 1.5, 1.25, 1.0,
         0.75, 0.5, 0.4, 0.25, 0.2, 0.1, 0.05}
 
@@ -137,14 +157,19 @@ Public Class AlbumBuilder
             Next
 
             ' Активируем шаблонный лист обратно
-            Try : If tmplSheet IsNot Nothing Then tmplSheet.Activate() : Catch : End Try
+            If tmplSheet IsNot Nothing Then
+                Try
+                    tmplSheet.Activate()
+                Catch
+                End Try
+            End If
 
         Finally
             _app.SilentOperation = False
         End Try
 
         Dim msg As String = "Альбом собран: " & okCount & " листов."
-        If failCount > 0 Then msg &= vbCrLf & "⚠ Не собрано: " & failCount & " (модели не найдены или ошибка видов)."
+        If failCount > 0 Then msg &= vbCrLf & "Не собрано: " & failCount & " (модели не найдены или ошибка видов)."
         System.Windows.Forms.MessageBox.Show(msg, "Готово",
             System.Windows.Forms.MessageBoxButtons.OK,
             System.Windows.Forms.MessageBoxIcon.Information)
@@ -174,17 +199,28 @@ Public Class AlbumBuilder
 
             ' Убираем старые виды
             For vi As Integer = sheet.DrawingViews.Count To 1 Step -1
-                Try : sheet.DrawingViews.Item(vi).Delete() : Catch : End Try
+                Try
+                    sheet.DrawingViews.Item(vi).Delete()
+                Catch
+                End Try
             Next
 
             ' Рамка СПДС
-            Try : If sheet.Border IsNot Nothing Then sheet.Border.Delete() : Catch : End Try
-            Try : sheet.AddCustomBorder(borderDef) : Catch ex As Exception
+            Try
+                If sheet.Border IsNot Nothing Then sheet.Border.Delete()
+            Catch
+            End Try
+            Try
+                sheet.AddCustomBorder(borderDef)
+            Catch ex As Exception
                 Debug.Print("WARN: AddCustomBorder: " & ex.Message)
             End Try
 
             ' Штамп Форма 3
-            Try : If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete() : Catch : End Try
+            Try
+                If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete()
+            Catch
+            End Try
             Dim ps(8) As String
             Dim order As String() = {"CODE","PROJECT_NAME","DRAWING_NAME","ORG_NAME","STAGE","SHEET","SHEETS"}
             For k As Integer = 0 To order.Length - 1
@@ -192,14 +228,17 @@ Public Class AlbumBuilder
                 item.Prompts.TryGetValue(order(k), v)
                 ps(k + 1) = If(String.IsNullOrEmpty(v), "", v)
             Next
-            Try : sheet.AddTitleBlock(tbDef, Nothing, ps) : Catch ex As Exception
+            Try
+                sheet.AddTitleBlock(tbDef, Nothing, ps)
+            Catch ex As Exception
                 Debug.Print("WARN: AddTitleBlock: " & ex.Message)
             End Try
 
             ' Открываем модель
             For Each ed As Document In _app.Documents
                 If String.Equals(ed.FullFileName, item.ModelPath, StringComparison.OrdinalIgnoreCase) Then
-                    modelDoc = ed : Exit For
+                    modelDoc = ed
+                    Exit For
                 End If
             Next
             If modelDoc Is Nothing Then
@@ -208,7 +247,10 @@ Public Class AlbumBuilder
             End If
             If modelDoc Is Nothing Then
                 Debug.Print("WARN: не удалось открыть: " & item.ModelPath)
-                Try : sheet.Delete() : Catch : End Try
+                Try
+                    sheet.Delete()
+                Catch
+                End Try
                 Return False
             End If
 
@@ -218,7 +260,10 @@ Public Class AlbumBuilder
 
             If sheet.DrawingViews.Count < 3 Then
                 Debug.Print("WARN: менее 3 видов на листе: " & sheetName)
-                Try : sheet.Delete() : Catch : End Try
+                Try
+                    sheet.Delete()
+                Catch
+                End Try
                 Return False
             End If
 
@@ -226,11 +271,19 @@ Public Class AlbumBuilder
 
         Catch ex As Exception
             Debug.Print("ERROR: BuildOneSheet: " & ex.Message)
-            Try : If sheet IsNot Nothing Then sheet.Delete() : Catch : End Try
+            If sheet IsNot Nothing Then
+                Try
+                    sheet.Delete()
+                Catch
+                End Try
+            End If
             Return False
         Finally
             If modelDoc IsNot Nothing AndAlso openedHere Then
-                Try : modelDoc.Close(True) : Catch : End Try
+                Try
+                    modelDoc.Close(True)
+                Catch
+                End Try
             End If
         End Try
     End Function
@@ -240,7 +293,7 @@ Public Class AlbumBuilder
     ' ================================================================
     Private Function PlaceViews(doc As DrawingDocument, sheet As Sheet, modelDoc As Document) As Boolean
         ' Зона для видов = лист минус штамп и поля
-        Dim shW As Double = sheet.Width   ' в см
+        Dim shW As Double = sheet.Width
         Dim shH As Double = sheet.Height
 
         Dim padL As Double = MmToCm(doc, FRAME_L_MM + 5)
@@ -257,7 +310,7 @@ Public Class AlbumBuilder
         Dim zoneW As Double = zoneX2 - zoneX1
         Dim zoneH As Double = zoneY2 - zoneY1
 
-        ' Измеряем размеры вида при масштабе 1:1 через probe
+        ' Измеряем размеры вида при масштабе 0.1 через probe
         Dim probeScale As Double = 0.1
         Dim probeView  As DrawingView = Nothing
         Dim natW As Double = 0
@@ -275,20 +328,23 @@ Public Class AlbumBuilder
             Debug.Print("WARN: probe view failed: " & ex.Message)
             Return False
         Finally
-            Try : If probeView IsNot Nothing Then probeView.Delete() : Catch : End Try
+            If probeView IsNot Nothing Then
+                Try
+                    probeView.Delete()
+                Catch
+                End Try
+            End If
         End Try
 
         If natW <= 0 OrElse natH <= 0 Then Return False
 
-        ' Подбираем масштаб: нужно вместить FRONT+TOP+SIDE в зону
-        ' TOP_ROW_RATIO=0.36 — верхняя строка (top+side), нижняя (front+iso)
+        ' Подбираем масштаб
         Dim gap As Double = MmToCm(doc, 8)
         Dim selectedScale As Double = SCALES(SCALES.Length - 1)
 
         For Each sc As Double In SCALES
             Dim frontW As Double = natW * sc
             Dim frontH As Double = natH * sc
-            ' Правило: front+top по вертикали ≤ zoneH, front+side по горизонтали ≤ zoneW
             If frontW + natH * sc + gap <= zoneW * 1.05 AndAlso
                frontH + natH * sc * 0.5 + gap <= zoneH * 1.05 Then
                 selectedScale = sc
@@ -296,7 +352,7 @@ Public Class AlbumBuilder
             End If
         Next
 
-        ' Размещаем: Front (нижний левый), Top (над Front), Side (правее Front), Iso (правый нижний)
+        ' Размещаем: Front, Top, Side, Iso
         Dim frontCX As Double = zoneX1 + (zoneW * 0.28)
         Dim frontCY As Double = zoneY1 + (zoneH * 0.38)
 
@@ -313,21 +369,30 @@ Public Class AlbumBuilder
                 selectedScale,
                 ViewOrientationTypeEnum.kFrontViewOrientation,
                 DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-            Try : baseView.ShowLabel = False : Catch : End Try
+            Try
+                baseView.ShowLabel = False
+            Catch
+            End Try
 
             ' Top — проецируем вверх
             topView = sheet.DrawingViews.AddProjectedView(
                 baseView,
                 _app.TransientGeometry.CreatePoint2d(frontCX, frontCY + natH * selectedScale + gap),
                 DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-            Try : topView.ShowLabel = False : Catch : End Try
+            Try
+                topView.ShowLabel = False
+            Catch
+            End Try
 
             ' Right/Left side — проецируем вправо
             sideView = sheet.DrawingViews.AddProjectedView(
                 baseView,
                 _app.TransientGeometry.CreatePoint2d(frontCX + natW * selectedScale + gap, frontCY),
                 DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-            Try : sideView.ShowLabel = False : Catch : End Try
+            Try
+                sideView.ShowLabel = False
+            Catch
+            End Try
 
             ' Iso — тонированный, правый нижний угол зоны
             Dim isoCX As Double = zoneX1 + zoneW * 0.78
@@ -339,7 +404,10 @@ Public Class AlbumBuilder
                     selectedScale * 0.75,
                     ViewOrientationTypeEnum.kIsoTopRightViewOrientation,
                     DrawingViewStyleEnum.kShadedDrawingViewStyle)
-                Try : isoView.ShowLabel = False : Catch : End Try
+                Try
+                    isoView.ShowLabel = False
+                Catch
+                End Try
             Catch
             End Try
 
@@ -347,9 +415,24 @@ Public Class AlbumBuilder
 
         Catch ex As Exception
             Debug.Print("ERROR: PlaceViews: " & ex.Message)
-            Try : If sideView IsNot Nothing Then sideView.Delete() : Catch : End Try
-            Try : If topView  IsNot Nothing Then topView.Delete()  : Catch : End Try
-            Try : If baseView IsNot Nothing Then baseView.Delete() : Catch : End Try
+            If sideView IsNot Nothing Then
+                Try
+                    sideView.Delete()
+                Catch
+                End Try
+            End If
+            If topView IsNot Nothing Then
+                Try
+                    topView.Delete()
+                Catch
+                End Try
+            End If
+            If baseView IsNot Nothing Then
+                Try
+                    baseView.Delete()
+                Catch
+                End Try
+            End If
             Return False
         End Try
     End Function
@@ -359,7 +442,10 @@ Public Class AlbumBuilder
     ' ================================================================
     Public Function EnsureBorder(doc As DrawingDocument) As BorderDefinition
         Dim def As BorderDefinition = Nothing
-        Try : def = doc.BorderDefinitions.Item(BORDER_NAME) : Catch : End Try
+        Try
+            def = doc.BorderDefinitions.Item(BORDER_NAME)
+        Catch
+        End Try
         If def Is Nothing Then
             _app.SilentOperation = True
             def = doc.BorderDefinitions.Add(BORDER_NAME)
@@ -371,7 +457,10 @@ Public Class AlbumBuilder
         Try
             ' Очистка
             For i As Integer = sk.SketchLines.Count To 1 Step -1
-                Try : sk.SketchLines.Item(i).Delete() : Catch : End Try
+                Try
+                    sk.SketchLines.Item(i).Delete()
+                Catch
+                End Try
             Next
 
             ' Микро-якоря
@@ -395,7 +484,10 @@ Public Class AlbumBuilder
     ' ================================================================
     Public Function EnsureTitleBlock(doc As DrawingDocument) As TitleBlockDefinition
         Dim def As TitleBlockDefinition = Nothing
-        Try : def = doc.TitleBlockDefinitions.Item(TB_NAME) : Catch : End Try
+        Try
+            def = doc.TitleBlockDefinitions.Item(TB_NAME)
+        Catch
+        End Try
         If def Is Nothing Then
             _app.SilentOperation = True
             def = doc.TitleBlockDefinitions.Add(TB_NAME)
@@ -406,10 +498,16 @@ Public Class AlbumBuilder
         def.Edit(sk)
         Try
             For i As Integer = sk.TextBoxes.Count To 1 Step -1
-                Try : sk.TextBoxes.Item(i).Delete() : Catch : End Try
+                Try
+                    sk.TextBoxes.Item(i).Delete()
+                Catch
+                End Try
             Next
             For i As Integer = sk.SketchLines.Count To 1 Step -1
-                Try : sk.SketchLines.Item(i).Delete() : Catch : End Try
+                Try
+                    sk.SketchLines.Item(i).Delete()
+                Catch
+                End Try
             Next
             DrawTbGeometry(doc, sk)
             DrawTbLabels(doc, sk)
@@ -487,7 +585,10 @@ Public Class AlbumBuilder
             End If
         Next
         For Each s As Sheet In toDelete
-            Try : s.Delete() : Catch : End Try
+            Try
+                s.Delete()
+            Catch
+            End Try
         Next
     End Sub
 
@@ -535,15 +636,27 @@ Public NotInheritable Class XlsxReader
         Try
             ' Загружаем System.IO.Compression через Reflection
             Dim asmComp As System.Reflection.Assembly = Nothing
-            Try : asmComp = System.Reflection.Assembly.Load("System.IO.Compression, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089") : Catch : End Try
+            Try
+                asmComp = System.Reflection.Assembly.Load("System.IO.Compression, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
+            Catch
+            End Try
             If asmComp Is Nothing Then
-                Try : asmComp = System.Reflection.Assembly.LoadWithPartialName("System.IO.Compression") : Catch : End Try
+                Try
+                    asmComp = System.Reflection.Assembly.LoadWithPartialName("System.IO.Compression")
+                Catch
+                End Try
             End If
 
             Dim asmFS As System.Reflection.Assembly = Nothing
-            Try : asmFS = System.Reflection.Assembly.Load("System.IO.Compression.FileSystem, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089") : Catch : End Try
+            Try
+                asmFS = System.Reflection.Assembly.Load("System.IO.Compression.FileSystem, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
+            Catch
+            End Try
             If asmFS Is Nothing Then
-                Try : asmFS = System.Reflection.Assembly.LoadWithPartialName("System.IO.Compression.FileSystem") : Catch : End Try
+                Try
+                    asmFS = System.Reflection.Assembly.LoadWithPartialName("System.IO.Compression.FileSystem")
+                Catch
+                End Try
             End If
 
             Dim zipFileType As System.Type = Nothing
@@ -564,18 +677,20 @@ Public NotInheritable Class XlsxReader
             If zip Is Nothing Then Throw New Exception("ZipFile.OpenRead вернул Nothing.")
 
             Try
-                Dim shared As List(Of String) = ReadSharedStrings(zip)
+                Dim sst As List(Of String) = ReadSharedStrings(zip)
                 Dim sheetPath As String = FindSheetPath(zip, sheetTab)
                 If String.IsNullOrEmpty(sheetPath) Then Throw New Exception("Лист '" & sheetTab & "' не найден.")
 
-                Dim rows As List(Of List(Of String)) = ReadSheet(zip, sheetPath, shared)
+                Dim rows As List(Of List(Of String)) = ReadSheet(zip, sheetPath, sst)
                 If rows.Count < 2 Then Throw New Exception("Лист пустой.")
 
                 Dim hIdx As Integer = DetectHeader(rows)
                 Dim hMap As Dictionary(Of String, Integer) = BuildMap(rows(hIdx))
                 If Not hMap.ContainsKey("MODEL_PATH") Then
                     Dim h As New System.Text.StringBuilder()
-                    For Each s As String In rows(hIdx) : If Not String.IsNullOrWhiteSpace(s) Then h.Append("[" & s & "] ") : End If : Next
+                    For Each s As String In rows(hIdx)
+                        If Not String.IsNullOrWhiteSpace(s) Then h.Append("[" & s & "] ")
+                    Next
                     Throw New Exception("MODEL_PATH не найден. Заголовки: " & h.ToString())
                 End If
 
@@ -605,34 +720,43 @@ Public NotInheritable Class XlsxReader
                 Try
                     Dim d As System.Reflection.MethodInfo = zip.GetType().GetMethod("Dispose")
                     If d IsNot Nothing Then d.Invoke(zip, Nothing)
-                Catch : End Try
+                Catch
+                End Try
             End Try
 
         Catch ex As Exception
             Dim real As Exception = ex
-            Do While real.InnerException IsNot Nothing : real = real.InnerException : Loop
+            Do While real.InnerException IsNot Nothing
+                real = real.InnerException
+            Loop
             System.Windows.Forms.MessageBox.Show("Ошибка чтения Excel:" & vbCrLf & real.Message & vbCrLf & "[" & real.GetType().Name & "]", "Ошибка")
         End Try
         Return result
     End Function
 
-    Private Shared Function GetEntry(zip As Object, name As String) As String
+    Private Shared Function GetEntry(zip As Object, entryName As String) As String
         Dim ge As System.Reflection.MethodInfo = zip.GetType().GetMethod("GetEntry")
-        Dim entry As Object = ge.Invoke(zip, New Object() {name})
+        Dim entry As Object = ge.Invoke(zip, New Object() {entryName})
         If entry Is Nothing Then Return Nothing
         Dim om As System.Reflection.MethodInfo = entry.GetType().GetMethod("Open")
         Dim stream As System.IO.Stream = CType(om.Invoke(entry, Nothing), System.IO.Stream)
-        Using sr As New System.IO.StreamReader(stream, System.Text.Encoding.UTF8) : Return sr.ReadToEnd() : End Using
+        Using sr As New System.IO.StreamReader(stream, System.Text.Encoding.UTF8)
+            Return sr.ReadToEnd()
+        End Using
     End Function
 
-    Private Shared Function FindSheetPath(zip As Object, name As String) As String
+    Private Shared Function FindSheetPath(zip As Object, tabName As String) As String
         Dim wb As String = GetEntry(zip, "xl/workbook.xml")
         If wb Is Nothing Then Return "xl/worksheets/sheet1.xml"
-        Dim rId As String = "" : Dim first As String = ""
+        Dim rId As String = ""
+        Dim first As String = ""
         For Each m As System.Text.RegularExpressions.Match In
                 System.Text.RegularExpressions.Regex.Matches(wb, "<sheet[^>]+name=""([^""]+)""[^>]+r:id=""([^""]+)""", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
             If first = "" Then first = m.Groups(2).Value
-            If String.Equals(m.Groups(1).Value, name, StringComparison.OrdinalIgnoreCase) Then rId = m.Groups(2).Value : Exit For
+            If String.Equals(m.Groups(1).Value, tabName, StringComparison.OrdinalIgnoreCase) Then
+                rId = m.Groups(2).Value
+                Exit For
+            End If
         Next
         If rId = "" Then rId = first
         If rId = "" Then Return "xl/worksheets/sheet1.xml"
@@ -657,14 +781,14 @@ Public NotInheritable Class XlsxReader
             Dim sb As New System.Text.StringBuilder()
             For Each tm As System.Text.RegularExpressions.Match In
                     System.Text.RegularExpressions.Regex.Matches(m.Groups(1).Value, "<t(?:[^>]*)>(.*?)</t>", System.Text.RegularExpressions.RegexOptions.Singleline)
-                sb.Append(XD(tm.Groups(1).Value))
+                sb.Append(XmlDecode(tm.Groups(1).Value))
             Next
             r.Add(sb.ToString())
         Next
         Return r
     End Function
 
-    Private Shared Function ReadSheet(zip As Object, path As String, shared As List(Of String)) As List(Of List(Of String))
+    Private Shared Function ReadSheet(zip As Object, path As String, sst As List(Of String)) As List(Of List(Of String))
         Dim result As New List(Of List(Of String))()
         Dim xml As String = GetEntry(zip, path)
         If xml Is Nothing Then Return result
@@ -683,22 +807,30 @@ Public NotInheritable Class XlsxReader
                 Dim val As String = ""
                 Dim vm As System.Text.RegularExpressions.Match = System.Text.RegularExpressions.Regex.Match(inner, "<v>(.*?)</v>", System.Text.RegularExpressions.RegexOptions.Singleline)
                 If vm.Success Then
-                    Dim rv As String = XD(vm.Groups(1).Value)
+                    Dim rv As String = XmlDecode(vm.Groups(1).Value)
                     If ct = "s" Then
                         Dim idx As Integer = 0
-                        If Integer.TryParse(rv, idx) AndAlso idx < shared.Count Then val = shared(idx)
+                        If Integer.TryParse(rv, idx) AndAlso idx < sst.Count Then
+                            val = sst(idx)
+                        End If
                     Else
                         val = rv
                     End If
                 End If
                 Dim ism As System.Text.RegularExpressions.Match = System.Text.RegularExpressions.Regex.Match(inner, "<is>.*?<t>(.*?)</t>.*?</is>", System.Text.RegularExpressions.RegexOptions.Singleline)
-                If ism.Success Then val = XD(ism.Groups(1).Value)
+                If ism.Success Then val = XmlDecode(ism.Groups(1).Value)
                 If ci > maxC Then maxC = ci
                 cd(ci) = val
             Next
             If maxC >= 0 Then
                 Dim row As New List(Of String)()
-                For ci As Integer = 0 To maxC : row.Add(If(cd.ContainsKey(ci), cd(ci), "")) : Next
+                For ci As Integer = 0 To maxC
+                    If cd.ContainsKey(ci) Then
+                        row.Add(cd(ci))
+                    Else
+                        row.Add("")
+                    End If
+                Next
                 result.Add(row)
             End If
         Next
@@ -709,11 +841,17 @@ Public NotInheritable Class XlsxReader
         For r As Integer = 0 To Math.Min(19, rows.Count - 1)
             If BuildMap(rows(r)).ContainsKey("MODEL_PATH") Then Return r
         Next
-        Dim best As Integer = 0 : Dim bestN As Integer = 0
+        Dim best As Integer = 0
+        Dim bestN As Integer = 0
         For r As Integer = 0 To Math.Min(19, rows.Count - 1)
             Dim n As Integer = 0
-            For Each v As String In rows(r) : If Not String.IsNullOrWhiteSpace(v) Then n += 1 : Next
-            If n > bestN Then bestN = n : best = r
+            For Each v As String In rows(r)
+                If Not String.IsNullOrWhiteSpace(v) Then n += 1
+            Next
+            If n > bestN Then
+                bestN = n
+                best = r
+            End If
         Next
         Return best
     End Function
@@ -721,13 +859,13 @@ Public NotInheritable Class XlsxReader
     Private Shared Function BuildMap(row As List(Of String)) As Dictionary(Of String, Integer)
         Dim m As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         For c As Integer = 0 To row.Count - 1
-            Dim k As String = Alias(row(c))
+            Dim k As String = MapAlias(row(c))
             If Not String.IsNullOrEmpty(k) AndAlso Not m.ContainsKey(k) Then m(k) = c
         Next
         Return m
     End Function
 
-    Private Shared Function Alias(raw As String) As String
+    Private Shared Function MapAlias(raw As String) As String
         If raw Is Nothing Then Return ""
         Dim n As String = raw.Trim().ToUpperInvariant()
         Select Case n
@@ -743,7 +881,9 @@ Public NotInheritable Class XlsxReader
         ' Транслитерация
         Dim src As String() = {"А","Б","В","Г","Д","Е","Ё","Ж","З","И","Й","К","Л","М","Н","О","П","Р","С","Т","У","Ф","Х","Ц","Ч","Ш","Щ","Ъ","Ы","Ь","Э","Ю","Я"}
         Dim dst As String() = {"A","B","V","G","D","E","E","ZH","Z","I","Y","K","L","M","N","O","P","R","S","T","U","F","H","C","CH","SH","SCH","","Y","","E","YU","YA"}
-        For i As Integer = 0 To src.Length - 1 : n = n.Replace(src(i), dst(i)) : Next
+        For i As Integer = 0 To src.Length - 1
+            n = n.Replace(src(i), dst(i))
+        Next
         n = System.Text.RegularExpressions.Regex.Replace(n, "[^A-Z0-9]+", "_").Trim("_"c)
         Select Case n
             Case "MODEL_PATH","MODEL","P" : Return "MODEL_PATH"
@@ -780,18 +920,21 @@ Public NotInheritable Class XlsxReader
                     Dim s As String = System.IO.Path.Combine(sub1, fn)
                     If System.IO.File.Exists(s) Then Return System.IO.Path.GetFullPath(s)
                 Next
-            Catch : End Try
+            Catch
+            End Try
         Next
         Return String.Empty
     End Function
 
     Private Shared Function ColIdx(col As String) As Integer
         Dim idx As Integer = 0
-        For Each ch As Char In col.ToUpper() : idx = idx * 26 + (AscW(ch) - AscW("A"c) + 1) : Next
+        For Each ch As Char In col.ToUpper()
+            idx = idx * 26 + (AscW(ch) - AscW("A"c) + 1)
+        Next
         Return idx - 1
     End Function
 
-    Private Shared Function XD(s As String) As String
+    Private Shared Function XmlDecode(s As String) As String
         If s Is Nothing Then Return ""
         Return s.Replace("&amp;","&").Replace("&lt;","<").Replace("&gt;",">").Replace("&quot;","""").Replace("&apos;","'")
     End Function
