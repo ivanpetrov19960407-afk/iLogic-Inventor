@@ -1,8 +1,11 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.11
+' StoneAlbumRule.ilogic.vb  –  v3.12
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.12: absolute slot geometry from A3 SPDS frame, no dynamic safeRect
+'        removed GetSheetSafeRect/InsetRect/ContentSlot calls from PlaceViewsSlotBased
+'        ScaleToFit cap raised from 20 to 100
 ' v3.11: fix PlaceViewInSlot — remove shrink loop, views now fill slots
 '        (ViewFitsSlot always returned False due to annotation bounding box)
 ' v3.10: don't re-edit existing border/titleblock defs (fixes text overflow),
@@ -362,33 +365,29 @@ Public Class AlbumBuilder
     '  SLOT-BASED LAYOUT  (точный порт GetTechSlotRects / PlaceTechViewLayout)
     ' ================================================================
     Private Function PlaceViewsSlotBased(doc As DrawingDocument, sheet As Sheet, modelDoc As Document) As Boolean
-        ' 1. Безопасная зона
-        Dim safeRect As SlotRect = GetSheetSafeRect(sheet)
-
-        ' 2. Сжимаем на LAYOUT_PAD_MM
-        Dim pad   As Double = Cm(doc, LAYOUT_PAD_MM)
-        Dim pRect As SlotRect = InsetRect(safeRect, pad)
-
-        ' 3. Делим на 4 слота (как VBA GetTechSlotRects)
-        Dim gap   As Double = Cm(doc, GAP_MM)
-        Dim splitX As Double = pRect.R - RectW(pRect) * TECH_RIGHT_COL_RATIO
-        Dim splitY As Double = pRect.T - RectH(pRect) * TECH_TOP_BAND_RATIO
-        Dim smallRight As Double = pRect.L + (splitX - pRect.L) * TECH_SMALL_SLOT_RATIO
-
-        ' rawSlots
-        Dim slotSmall As SlotRect = New SlotRect(pRect.L,        smallRight - gap, splitY + gap, pRect.T)
-        Dim slotWide  As SlotRect = New SlotRect(smallRight + gap, pRect.R,        splitY + gap, pRect.T)
-        Dim slotLarge As SlotRect = New SlotRect(pRect.L,        splitX - gap,    pRect.B,       splitY - gap)
-        Dim slotIso   As SlotRect = New SlotRect(splitX + gap,   pRect.R,         pRect.B,       splitY - gap)
-
-        ' contentSlots (с паддингом и отступом на подпись)
-        Dim cPad    As Double = Cm(doc, SLOT_CONTENT_PAD_MM)
-        Dim capClear As Double = Cm(doc, CAPTION_CLEAR_TOP_MM)
-
-        Dim csSmall As SlotRect = ContentSlot(slotSmall, cPad, capClear)
-        Dim csWide  As SlotRect = ContentSlot(slotWide,  cPad, capClear)
-        Dim csLarge As SlotRect = ContentSlot(slotLarge, cPad, capClear)
-        Dim csIso   As SlotRect = ContentSlot(slotIso,   cPad, cPad)    ' ISO — без подписи
+        ' Абсолютные границы рабочей зоны А3 СПДС (в см)
+        Dim workL As Double = Cm(doc, 20.0)    ' левый отступ рамки СПДС
+        Dim workR As Double = Cm(doc, 415.0)   ' правый край (420-5)
+        Dim workB As Double = Cm(doc, 65.0)    ' над штампом (55мм) + зазор
+        Dim workT As Double = Cm(doc, 292.0)   ' верхний край (297-5)
+        Dim workW As Double = workR - workL
+        Dim workH As Double = workT - workB
+        Dim gap   As Double = Cm(doc, 5.0)
+        ' Разделители пропорционально рабочей зоне (из образца)
+        Dim splitY  As Double = workB + workH * 0.70
+        Dim splitX  As Double = workL + workW * 0.66
+        Dim smallRt As Double = workL + (splitX - workL) * 0.38
+        ' 4 слота
+        Dim slotSmall As SlotRect = New SlotRect(workL,        smallRt - gap, splitY + gap, workT)
+        Dim slotWide  As SlotRect = New SlotRect(smallRt + gap, workR,        splitY + gap, workT)
+        Dim slotLarge As SlotRect = New SlotRect(workL,        splitX - gap,  workB,        splitY - gap)
+        Dim slotIso   As SlotRect = New SlotRect(splitX + gap,  workR,        workB,        splitY - gap)
+        ' Паддинг контента
+        Dim cPad As Double = Cm(doc, 2.0)
+        Dim csSmall As SlotRect = New SlotRect(slotSmall.L + cPad, slotSmall.R - cPad, slotSmall.B + cPad, slotSmall.T - cPad)
+        Dim csWide  As SlotRect = New SlotRect(slotWide.L  + cPad, slotWide.R  - cPad, slotWide.B  + cPad, slotWide.T  - cPad)
+        Dim csLarge As SlotRect = New SlotRect(slotLarge.L + cPad, slotLarge.R - cPad, slotLarge.B + cPad, slotLarge.T - cPad)
+        Dim csIso   As SlotRect = New SlotRect(slotIso.L   + cPad, slotIso.R   - cPad, slotIso.B   + cPad, slotIso.T   - cPad)
 
         ' 4. Измеряем 4 ориентации через probe-виды
         Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
@@ -542,7 +541,7 @@ Public Class AlbumBuilder
             sc90 = Math.Min(sw / m.UnitH, sh / m.UnitW) * margin
         End If
         Dim best As Double = Math.Max(sc0, sc90)
-        If best > MAX_AUTO_SCALE Then best = MAX_AUTO_SCALE
+        If best > 100.0 Then best = 100.0
         If best < 0.02 Then Return 0
         Return best
     End Function
