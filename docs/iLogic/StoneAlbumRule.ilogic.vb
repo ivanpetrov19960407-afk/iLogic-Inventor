@@ -890,7 +890,7 @@ End Class
 Public NotInheritable Class ExcelLoader
 
     Private Const DEFAULT_SHEET As String = "ALBUM"
-    Private Const HEADER_SCAN   As Integer = 10
+    Private Const HEADER_SCAN   As Integer = 20
 
     Public Shared Function Load(
             excelPath As String,
@@ -919,7 +919,23 @@ Public NotInheritable Class ExcelLoader
             Dim headerMap As Dictionary(Of String, Integer) = ReadHeaders(xlSheet, headerRow)
 
             If Not headerMap.ContainsKey("MODEL_PATH") Then
-                Throw New Exception("Колонка MODEL_PATH (или алиас) не найдена.")
+                ' Собираем реальные заголовки для диагностики
+                Dim foundHeaders As New System.Text.StringBuilder()
+                Dim diagLastCol As Integer = CInt(xlSheet.Cells(1, xlSheet.Columns.Count).End(-4159).Column)
+                For diagR As Integer = 1 To Math.Min(5, CInt(xlSheet.UsedRange.Rows.Count))
+                    foundHeaders.Append("Строка " & diagR & ": ")
+                    For diagC As Integer = 1 To Math.Min(diagLastCol, 15)
+                        Dim cv As String = SafeCell(xlSheet.Cells(diagR, diagC).Value)
+                        If Not String.IsNullOrWhiteSpace(cv) Then
+                            foundHeaders.Append("[" & cv & "] ")
+                        End If
+                    Next
+                    foundHeaders.AppendLine()
+                Next
+                Throw New Exception("Колонка MODEL_PATH не найдена." & vbCrLf & vbCrLf &
+                    "Колонка должна называться одним из:" & vbCrLf &
+                    "  MODEL_PATH, MODEL, ПУТЬ, ФАЙЛ, МОДЕЛЬ" & vbCrLf & vbCrLf &
+                    "Найдено в файле:" & vbCrLf & foundHeaders.ToString())
             End If
 
             Dim modelCol As Integer = headerMap("MODEL_PATH")
@@ -1002,7 +1018,7 @@ Public NotInheritable Class ExcelLoader
         ' 1) Алиас по точному совпадению (с поддержкой кириллицы)
         Dim n As String = raw.Trim().ToUpperInvariant()
         Select Case n
-            Case "MODEL_PATH", "MODEL", "P", "ПУТЬ", "ФАЙЛ", "МОДЕЛЬ"    : Return "MODEL_PATH"
+            Case "MODEL_PATH", "MODEL", "P", "ПУТЬ", "ФАЙЛ", "МОДЕЛЬ", "PATH", "FILEPATH", "FILE_PATH", "ИПТ", "IPT", "МОДЕЛЬ_ПУТЬ", "ПУТЬ_К_ФАЙЛУ"    : Return "MODEL_PATH"
             Case "CODE", "ШИФР", "АРТИКУЛ", "ОБОЗНАЧЕНИЕ"                : Return "CODE"
             Case "PROJECT_NAME", "PROJECT", "ОБЪЕКТ", "ПРОЕКТ"           : Return "PROJECT_NAME"
             Case "DRAWING_NAME", "TITLE", "НАИМЕНОВАНИЕ", "ИМЯ ЧЕРТЕЖА" : Return "DRAWING_NAME"
