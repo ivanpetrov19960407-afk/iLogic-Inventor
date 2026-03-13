@@ -1,8 +1,11 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.5
+' StoneAlbumRule.ilogic.vb  –  v3.6
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.6: ФИКС borderDef/tbDef — получаем в каждом BuildOneSheet заново
+'       из doc.BorderDefinitions.Item() чтобы не протухали после doc.Update2
+'       Убрали doc.Update2(True) после AddTitleBlock (мешал RCW)
 ' v3.5: ФИКС ViewFitsSlot — через v.Left/v.Top (как VBA DoesViewFitRect)
 '       вместо ненадёжного v.Center.X±Width/2
 '       ФИКС PlaceViewInSlot — вид создаётся сразу в центре слота,
@@ -146,9 +149,12 @@ Public Class AlbumBuilder
 
         ' SilentOperation НЕ включаем глобально — иначе виды не обновляются!
         ' Точечно включается только вокруг Documents.Open внутри BuildOneSheet.
+        ' v3.6: определения создаём один раз, но в каждом BuildOneSheet
+        '       получаем свежую ссылку через .Item() чтобы RCW не протухал.
         Try
-            Dim borderDef As BorderDefinition    = EnsureBorder(doc)
-            Dim tbDef     As TitleBlockDefinition = EnsureTitleBlock(doc)
+            ' Инициализируем определения рамки и штампа один раз
+            EnsureBorder(doc)
+            EnsureTitleBlock(doc)
             Dim tmplSheet As Sheet = ResolveTemplateSheet(doc)
             PurgeAlbumSheets(doc, tmplSheet)
 
@@ -157,7 +163,7 @@ Public Class AlbumBuilder
                 If String.IsNullOrWhiteSpace(item.Prompts("SHEET"))  Then item.Prompts("SHEET")  = (i + 1).ToString()
                 If String.IsNullOrWhiteSpace(item.Prompts("SHEETS")) Then item.Prompts("SHEETS") = items.Count.ToString()
 
-                Dim ok As Boolean = BuildOneSheet(doc, item, borderDef, tbDef)
+                Dim ok As Boolean = BuildOneSheet(doc, item)
                 If ok Then okCount += 1 Else failCount += 1
             Next
 
@@ -180,9 +186,9 @@ Public Class AlbumBuilder
     End Sub
 
     ' ── Один лист ──
-    Private Function BuildOneSheet(doc As DrawingDocument, item As AlbumItem,
-                                   borderDef As BorderDefinition,
-                                   tbDef As TitleBlockDefinition) As Boolean
+    ' v3.6: borderDef/tbDef получаем заново внутри каждого вызова
+    '       (COM RCW протухает после doc.Update2 если ссылка хранится снаружи)
+    Private Function BuildOneSheet(doc As DrawingDocument, item As AlbumItem) As Boolean
         If Not System.IO.File.Exists(item.ModelPath) Then
             Debug.Print("WARN: модель не найдена: " & item.ModelPath)
             Return False
@@ -208,18 +214,35 @@ Public Class AlbumBuilder
                 End Try
             Next
 
-            ' Рамка СПДС
+            ' Рамка СПДС — v3.6: получаем свежую ссылку каждый раз
+            Dim borderDef As BorderDefinition = Nothing
+            Try
+                borderDef = doc.BorderDefinitions.Item(BORDER_NAME)
+            Catch ex As Exception
+                Debug.Print("WARN BorderDef.Item: " & ex.Message)
+            End Try
             Try
                 If sheet.Border IsNot Nothing Then sheet.Border.Delete()
             Catch
             End Try
-            Try
-                sheet.AddCustomBorder(borderDef)
-            Catch ex As Exception
-                Debug.Print("WARN AddCustomBorder: " & ex.Message)
-            End Try
+            If borderDef IsNot Nothing Then
+                Try
+                    sheet.AddCustomBorder(borderDef)
+                    Debug.Print("AddCustomBorder OK на листе: " & sheet.Name)
+                Catch ex As Exception
+                    Debug.Print("WARN AddCustomBorder: " & ex.Message)
+                End Try
+            Else
+                Debug.Print("WARN: borderDef = Nothing для листа: " & sheet.Name)
+            End If
 
-            ' Штамп Форма 3
+            ' Штамп Форма 3 — v3.6: тоже свежая ссылка
+            Dim tbDef As TitleBlockDefinition = Nothing
+            Try
+                tbDef = doc.TitleBlockDefinitions.Item(TB_NAME)
+            Catch ex As Exception
+                Debug.Print("WARN TBDef.Item: " & ex.Message)
+            End Try
             Try
                 If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete()
             Catch
@@ -231,17 +254,20 @@ Public Class AlbumBuilder
                 item.Prompts.TryGetValue(order(k), v)
                 ps(k + 1) = If(String.IsNullOrEmpty(v), "", v)
             Next
-            Try
-                sheet.AddTitleBlock(tbDef, Nothing, ps)
-            Catch ex As Exception
-                Debug.Print("WARN AddTitleBlock: " & ex.Message)
-            End Try
+            If tbDef IsNot Nothing Then
+                Try
+                    sheet.AddTitleBlock(tbDef, Nothing, ps)
+                    Debug.Print("AddTitleBlock OK на листе: " & sheet.Name)
+                Catch ex As Exception
+                    Debug.Print("WARN AddTitleBlock: " & ex.Message)
+                End Try
+            Else
+                Debug.Print("WARN: tbDef = Nothing для листа: " & sheet.Name)
+            End If
 
-            ' Обновляем документ — чтобы TitleBlock.RangeBox был актуален
-            Try
-                doc.Update2(True)
-            Catch
-            End Try
+            ' v3.6: НЕ вызываем doc.Update2 здесь — это инвалидирует COM-ссылки
+            ' TitleBlock.RangeBox читаем без принудительного обновления
+            ' (достаточно того что sheet.Activate() уже обновил геометрию листа)
 
             ' Открываем модель
             For Each ed As Document In _app.Documents
