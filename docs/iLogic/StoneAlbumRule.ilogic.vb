@@ -14,7 +14,7 @@ Option Explicit On
 Imports Inventor
 Imports System
 Imports System.Collections.Generic
-Imports System.IO.Compression
+' Imports System.IO.Compression -- не используется, сборка загружается через Assembly.LoadWithPartialName
 ' Imports System.IO  -- убрано: конфликт Path/File с Inventor (используем полные пути System.IO.Path / System.IO.File)
 
 ' ================================================================
@@ -903,8 +903,8 @@ Public NotInheritable Class ExcelLoader
     Private Const DEFAULT_SHEET As String = "ALBUM"
 
     ' ================================================================
-    '  Чтение .xlsx напрямую как ZIP+XML — без COM, без Excel.exe
-    '  Работает в iLogic без каких-либо внешних зависимостей
+    '  Чтение .xlsx через Reflection + ZipArchive (без прямой ссылки на сборку)
+    '  ZipFile/ZipArchive загружаются через Assembly.Load во время выполнения
     ' ================================================================
     Public Shared Function Load(
             excelPath As String,
@@ -912,52 +912,82 @@ Public NotInheritable Class ExcelLoader
             sheetTabName As String) As List(Of StoneAlbumRule.AlbumItem)
 
         Dim result As New List(Of StoneAlbumRule.AlbumItem)()
-
         Try
-            ' --- 1. Читаем ZIP-архив (.xlsx = ZIP) ---
-            Dim zip As System.IO.Compression.ZipArchive = Nothing
+            ' Загружаем System.IO.Compression и System.IO.Compression.FileSystem через Reflection
+            Dim asmComp     As System.Reflection.Assembly = Nothing
+            Dim asmCompFS   As System.Reflection.Assembly = Nothing
             Try
-                zip = System.IO.Compression.ZipFile.OpenRead(excelPath)
-            Catch ex As Exception
-                Throw New Exception("Не удалось открыть Excel-файл как ZIP: " & ex.Message & vbCrLf &
-                                    "Убедитесь что файл сохранён в формате .xlsx (не .xls)")
+                asmComp   = System.Reflection.Assembly.Load("System.IO.Compression, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
+            Catch
+                Try
+                    asmComp = System.Reflection.Assembly.LoadWithPartialName("System.IO.Compression")
+                Catch
+                End Try
+            End Try
+            Try
+                asmCompFS = System.Reflection.Assembly.Load("System.IO.Compression.FileSystem, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
+            Catch
+                Try
+                    asmCompFS = System.Reflection.Assembly.LoadWithPartialName("System.IO.Compression.FileSystem")
+                Catch
+                End Try
             End Try
 
-            Using zip
-                ' --- 2. Читаем workbook.xml → маппинг имён листов → rId → sheet1.xml ---
-                Dim sheetXmlName As String = FindSheetXmlName(zip, sheetTabName)
+            If asmComp Is Nothing Then
+                Throw New Exception("Не удалось загрузить System.IO.Compression." & vbCrLf &
+                                    "Проверьте версию .NET Framework в Inventor.")
+            End If
+
+            ' Получаем тип ZipFile (он в FileSystem сборке, или в основной)
+            Dim zipFileType As System.Type = Nothing
+            If asmCompFS IsNot Nothing Then zipFileType = asmCompFS.GetType("System.IO.Compression.ZipFile")
+            If zipFileType Is Nothing Then zipFileType = asmComp.GetType("System.IO.Compression.ZipFile")
+            If zipFileType Is Nothing Then
+                ' .NET 4.5+ ZipFile может быть в основной сборке
+                zipFileType = System.Type.GetType("System.IO.Compression.ZipFile, System.IO.Compression.FileSystem")
+            End If
+            If zipFileType Is Nothing Then
+                Throw New Exception("Тип ZipFile не найден в загруженных сборках.")
+            End If
+
+            ' ZipFile.OpenRead(path) → ZipArchive
+            Dim zipArchive As Object = zipFileType.InvokeMember(
+                "OpenRead",
+                System.Reflection.BindingFlags.Static Or System.Reflection.BindingFlags.Public Or System.Reflection.BindingFlags.InvokeMethod,
+                Nothing, Nothing, New Object() {excelPath})
+
+            If zipArchive Is Nothing Then
+                Throw New Exception("ZipFile.OpenRead вернул Nothing для: " & excelPath)
+            End If
+
+            Try
+                Dim sharedStrings As List(Of String) = ReadSharedStrings(zipArchive)
+                Dim sheetXmlName  As String           = FindSheetXmlName(zipArchive, sheetTabName)
                 If String.IsNullOrEmpty(sheetXmlName) Then
                     Throw New Exception("Лист '" & sheetTabName & "' не найден в " & excelPath)
                 End If
 
-                ' --- 3. Читаем sharedStrings.xml (справочник строк) ---
-                Dim sharedStrings As List(Of String) = ReadSharedStrings(zip)
-
-                ' --- 4. Читаем лист ---
-                Dim rows As List(Of List(Of String)) = ReadSheet(zip, sheetXmlName, sharedStrings)
-
+                Dim rows As List(Of List(Of String)) = ReadSheet(zipArchive, sheetXmlName, sharedStrings)
                 If rows.Count < 2 Then
                     Throw New Exception("Лист '" & sheetTabName & "' пустой или содержит только заголовок.")
                 End If
 
-                ' --- 5. Определяем заголовочную строку ---
                 Dim headerRowIdx As Integer = DetectHeaderRow(rows)
-                Dim headerMap As Dictionary(Of String, Integer) = BuildHeaderMap(rows(headerRowIdx))
+                Dim headerMap    As Dictionary(Of String, Integer) = BuildHeaderMap(rows(headerRowIdx))
 
                 If Not headerMap.ContainsKey("MODEL_PATH") Then
                     Dim found As New System.Text.StringBuilder()
                     For Each h As String In rows(headerRowIdx)
                         If Not String.IsNullOrWhiteSpace(h) Then found.Append("[" & h & "] ")
                     Next
-                    Throw New Exception("Колонка MODEL_PATH не найдена." & vbCrLf & vbCrLf &
-                        "Допустимые имена: MODEL_PATH, MODEL, ПУТЬ, ФАЙЛ, МОДЕЛЬ" & vbCrLf & vbCrLf &
-                        "Найденные заголовки: " & found.ToString())
+                    Throw New Exception("Колонка MODEL_PATH не найдена." & vbCrLf &
+                        "Допустимые: MODEL_PATH, MODEL, ПУТЬ, ФАЙЛ, МОДЕЛЬ" & vbCrLf &
+                        "Найдено: " & found.ToString())
                 End If
 
-                Dim modelCol As Integer = headerMap("MODEL_PATH")
-                Dim promptKeys As String() = {"CODE","PROJECT_NAME","DRAWING_NAME","ORG_NAME","STAGE","SHEET","SHEETS"}
+                Dim modelCol   As Integer   = headerMap("MODEL_PATH")
+                Dim promptKeys As String()  = {"CODE","PROJECT_NAME","DRAWING_NAME","ORG_NAME","STAGE","SHEET","SHEETS"}
 
-                ' --- 6. Читаем строки данных ---
                 For r As Integer = headerRowIdx + 1 To rows.Count - 1
                     Dim row As List(Of String) = rows(r)
                     If row.Count <= modelCol Then Continue For
@@ -969,7 +999,6 @@ Public NotInheritable Class ExcelLoader
 
                     Dim item As New StoneAlbumRule.AlbumItem()
                     item.ModelPath = resolvedPath
-
                     For Each key As String In promptKeys
                         If headerMap.ContainsKey(key) Then
                             Dim col As Integer = headerMap(key)
@@ -978,10 +1007,16 @@ Public NotInheritable Class ExcelLoader
                             End If
                         End If
                     Next
-
                     result.Add(item)
                 Next
-            End Using
+            Finally
+                ' Закрываем ZipArchive (Dispose)
+                Try
+                    Dim dispMethod As System.Reflection.MethodInfo = zipArchive.GetType().GetMethod("Dispose")
+                    If dispMethod IsNot Nothing Then dispMethod.Invoke(zipArchive, Nothing)
+                Catch
+                End Try
+            End Try
 
         Catch ex As Exception
             System.Windows.Forms.MessageBox.Show(
@@ -994,76 +1029,66 @@ Public NotInheritable Class ExcelLoader
         Return result
     End Function
 
-    ' ── Найти имя файла листа внутри ZIP ──
-    Private Shared Function FindSheetXmlName(zip As System.IO.Compression.ZipArchive, sheetTabName As String) As String
-        ' Читаем workbook.xml для маппинга sheet name → r:id
-        Dim wbEntry As System.IO.Compression.ZipArchiveEntry = zip.GetEntry("xl/workbook.xml")
-        If wbEntry Is Nothing Then Return "xl/worksheets/sheet1.xml"
+    ' ── Получить содержимое файла внутри ZIP по имени ──
+    Private Shared Function GetZipEntryText(zipArchive As Object, entryName As String) As String
+        ' zipArchive.GetEntry(entryName) → ZipArchiveEntry
+        Dim getEntry As System.Reflection.MethodInfo = zipArchive.GetType().GetMethod("GetEntry")
+        Dim entry As Object = getEntry.Invoke(zipArchive, New Object() {entryName})
+        If entry Is Nothing Then Return Nothing
 
-        Dim wbXml As String
-        Using sr As New System.IO.StreamReader(wbEntry.Open())
-            wbXml = sr.ReadToEnd()
+        ' entry.Open() → Stream
+        Dim openMethod As System.Reflection.MethodInfo = entry.GetType().GetMethod("Open")
+        Dim stream As System.IO.Stream = CType(openMethod.Invoke(entry, Nothing), System.IO.Stream)
+        Using sr As New System.IO.StreamReader(stream, System.Text.Encoding.UTF8)
+            Return sr.ReadToEnd()
         End Using
+    End Function
 
-        ' Ищем <sheet name="ALBUM" ... r:id="rId2"/>
-        Dim rId As String = ""
-        Dim pattern As String = "<sheet[^>]+name=""([^""]+)""[^>]+r:id=""([^""]+)"""
-        Dim mc As System.Text.RegularExpressions.MatchCollection =
-            System.Text.RegularExpressions.Regex.Matches(wbXml, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+    ' ── Найти имя файла листа внутри ZIP ──
+    Private Shared Function FindSheetXmlName(zipArchive As Object, sheetTabName As String) As String
+        Dim wbXml As String = GetZipEntryText(zipArchive, "xl/workbook.xml")
+        If wbXml Is Nothing Then Return "xl/worksheets/sheet1.xml"
 
+        Dim rId As String    = ""
         Dim firstRid As String = ""
+        Dim mc As System.Text.RegularExpressions.MatchCollection =
+            System.Text.RegularExpressions.Regex.Matches(wbXml,
+                "<sheet[^>]+name=""([^""]+)""[^>]+r:id=""([^""]+)""",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
         For Each m As System.Text.RegularExpressions.Match In mc
             If firstRid = "" Then firstRid = m.Groups(2).Value
             If String.Equals(m.Groups(1).Value, sheetTabName, StringComparison.OrdinalIgnoreCase) Then
-                rId = m.Groups(2).Value
-                Exit For
+                rId = m.Groups(2).Value : Exit For
             End If
         Next
         If rId = "" Then rId = firstRid
         If rId = "" Then Return "xl/worksheets/sheet1.xml"
 
-        ' Читаем workbook.xml.rels для маппинга r:id → Target
-        Dim relsEntry As System.IO.Compression.ZipArchiveEntry = zip.GetEntry("xl/_rels/workbook.xml.rels")
-        If relsEntry Is Nothing Then Return "xl/worksheets/sheet1.xml"
-
-        Dim relsXml As String
-        Using sr As New System.IO.StreamReader(relsEntry.Open())
-            relsXml = sr.ReadToEnd()
-        End Using
-
-        Dim relPattern As String = "Id=""" & rId & """[^>]+Target=""([^""]+)"""
-        Dim rm As System.Text.RegularExpressions.Match =
-            System.Text.RegularExpressions.Regex.Match(relsXml, relPattern)
-        If rm.Success Then
-            Dim target As String = rm.Groups(1).Value
-            If Not target.StartsWith("xl/") Then target = "xl/" & target
-            Return target
+        Dim relsXml As String = GetZipEntryText(zipArchive, "xl/_rels/workbook.xml.rels")
+        If relsXml IsNot Nothing Then
+            Dim rm As System.Text.RegularExpressions.Match =
+                System.Text.RegularExpressions.Regex.Match(relsXml, "Id=""" & rId & """[^>]+Target=""([^""]+)""")
+            If rm.Success Then
+                Dim target As String = rm.Groups(1).Value
+                If Not target.StartsWith("xl/") Then target = "xl/" & target
+                Return target
+            End If
         End If
-
         Return "xl/worksheets/sheet1.xml"
     End Function
 
     ' ── Читаем sharedStrings.xml ──
-    Private Shared Function ReadSharedStrings(zip As System.IO.Compression.ZipArchive) As List(Of String)
+    Private Shared Function ReadSharedStrings(zipArchive As Object) As List(Of String)
         Dim result As New List(Of String)()
-        Dim entry As System.IO.Compression.ZipArchiveEntry = zip.GetEntry("xl/sharedStrings.xml")
-        If entry Is Nothing Then Return result
+        Dim xml As String = GetZipEntryText(zipArchive, "xl/sharedStrings.xml")
+        If xml Is Nothing Then Return result
 
-        Dim xml As String
-        Using sr As New System.IO.StreamReader(entry.Open())
-            xml = sr.ReadToEnd()
-        End Using
-
-        ' Каждый <si>...<t>текст</t>...</si>
         Dim siMatches As System.Text.RegularExpressions.MatchCollection =
             System.Text.RegularExpressions.Regex.Matches(xml, "<si>(.*?)</si>",
                 System.Text.RegularExpressions.RegexOptions.Singleline)
-
         For Each m As System.Text.RegularExpressions.Match In siMatches
-            Dim inner As String = m.Groups(1).Value
-            ' Собираем все <t>...</t> (может быть несколько при форматировании)
             Dim tMatches As System.Text.RegularExpressions.MatchCollection =
-                System.Text.RegularExpressions.Regex.Matches(inner, "<t(?:[^>]*)>(.*?)</t>",
+                System.Text.RegularExpressions.Regex.Matches(m.Groups(1).Value, "<t(?:[^>]*)>(.*?)</t>",
                     System.Text.RegularExpressions.RegexOptions.Singleline)
             Dim sb As New System.Text.StringBuilder()
             For Each tm As System.Text.RegularExpressions.Match In tMatches
@@ -1071,61 +1096,43 @@ Public NotInheritable Class ExcelLoader
             Next
             result.Add(sb.ToString())
         Next
-
         Return result
     End Function
 
     ' ── Читаем лист sheet.xml → List(Of List(Of String)) ──
-    Private Shared Function ReadSheet(
-            zip As System.IO.Compression.ZipArchive,
-            sheetPath As String,
-            sharedStrings As List(Of String)) As List(Of List(Of String))
-
+    Private Shared Function ReadSheet(zipArchive As Object, sheetPath As String,
+                                      sharedStrings As List(Of String)) As List(Of List(Of String))
         Dim result As New List(Of List(Of String))()
-        Dim entry As System.IO.Compression.ZipArchiveEntry = zip.GetEntry(sheetPath)
-        If entry Is Nothing Then Return result
+        Dim xml As String = GetZipEntryText(zipArchive, sheetPath)
+        If xml Is Nothing Then Return result
 
-        Dim xml As String
-        Using sr As New System.IO.StreamReader(entry.Open())
-            xml = sr.ReadToEnd()
-        End Using
-
-        ' Парсим строки <row ...>...</row>
         Dim rowMatches As System.Text.RegularExpressions.MatchCollection =
             System.Text.RegularExpressions.Regex.Matches(xml, "<row[^>]*>(.*?)</row>",
                 System.Text.RegularExpressions.RegexOptions.Singleline)
-
         For Each rowM As System.Text.RegularExpressions.Match In rowMatches
-            Dim rowXml As String = rowM.Groups(1).Value
-            Dim cells As New List(Of String)()
-
-            ' Парсим ячейки <c r="A1" t="s"><v>0</v></c>
             Dim cellMatches As System.Text.RegularExpressions.MatchCollection =
-                System.Text.RegularExpressions.Regex.Matches(rowXml, "<c\s+r=""([A-Z]+)(\d+)""([^>]*)>(.*?)</c>",
+                System.Text.RegularExpressions.Regex.Matches(rowM.Groups(1).Value,
+                    "<c\s+r=""([A-Z]+)\d+""([^>]*)>(.*?)</c>",
                     System.Text.RegularExpressions.RegexOptions.Singleline)
 
-            Dim maxCol As Integer = 0
+            Dim maxCol As Integer = -1
             Dim cellData As New Dictionary(Of Integer, String)()
-
             For Each cellM As System.Text.RegularExpressions.Match In cellMatches
-                Dim colLetter As String = cellM.Groups(1).Value
-                Dim colIdx    As Integer = ColLetterToIndex(colLetter)   ' 0-based
-                Dim attrs     As String  = cellM.Groups(3).Value
-                Dim inner     As String  = cellM.Groups(4).Value
-
+                Dim colIdx  As Integer = ColLetterToIndex(cellM.Groups(1).Value)
+                Dim attrs   As String  = cellM.Groups(2).Value
+                Dim inner   As String  = cellM.Groups(3).Value
                 Dim cellType As String = ""
                 Dim typeM As System.Text.RegularExpressions.Match =
                     System.Text.RegularExpressions.Regex.Match(attrs, "\bt=""([^""]+)""")
                 If typeM.Success Then cellType = typeM.Groups(1).Value
 
-                Dim vMatch As System.Text.RegularExpressions.Match =
+                Dim cellVal As String = ""
+                Dim vM As System.Text.RegularExpressions.Match =
                     System.Text.RegularExpressions.Regex.Match(inner, "<v>(.*?)</v>",
                         System.Text.RegularExpressions.RegexOptions.Singleline)
-                Dim cellVal As String = ""
-                If vMatch.Success Then
-                    Dim raw As String = XmlDecode(vMatch.Groups(1).Value)
+                If vM.Success Then
+                    Dim raw As String = XmlDecode(vM.Groups(1).Value)
                     If cellType = "s" Then
-                        ' Shared string index
                         Dim idx As Integer = 0
                         If Integer.TryParse(raw, idx) AndAlso idx < sharedStrings.Count Then
                             cellVal = sharedStrings(idx)
@@ -1134,51 +1141,42 @@ Public NotInheritable Class ExcelLoader
                         cellVal = raw
                     End If
                 End If
-
-                ' Inline string <is><t>...</t></is>
-                Dim isMatch As System.Text.RegularExpressions.Match =
+                Dim isM As System.Text.RegularExpressions.Match =
                     System.Text.RegularExpressions.Regex.Match(inner, "<is>.*?<t>(.*?)</t>.*?</is>",
                         System.Text.RegularExpressions.RegexOptions.Singleline)
-                If isMatch.Success Then cellVal = XmlDecode(isMatch.Groups(1).Value)
+                If isM.Success Then cellVal = XmlDecode(isM.Groups(1).Value)
 
                 If colIdx > maxCol Then maxCol = colIdx
                 cellData(colIdx) = cellVal
             Next
 
-            ' Построить список с учётом пропусков колонок
-            Dim rowList As New List(Of String)()
-            For ci As Integer = 0 To maxCol
-                rowList.Add(If(cellData.ContainsKey(ci), cellData(ci), ""))
-            Next
-            result.Add(rowList)
+            If maxCol >= 0 Then
+                Dim rowList As New List(Of String)()
+                For ci As Integer = 0 To maxCol
+                    rowList.Add(If(cellData.ContainsKey(ci), cellData(ci), ""))
+                Next
+                result.Add(rowList)
+            End If
         Next
-
         Return result
     End Function
 
     ' ── Определить строку заголовка ──
     Private Shared Function DetectHeaderRow(rows As List(Of List(Of String))) As Integer
         For r As Integer = 0 To Math.Min(19, rows.Count - 1)
-            Dim map As Dictionary(Of String, Integer) = BuildHeaderMap(rows(r))
-            If map.ContainsKey("MODEL_PATH") Then Return r
+            If BuildHeaderMap(rows(r)).ContainsKey("MODEL_PATH") Then Return r
         Next
-        ' Fallback — строка с наибольшим числом непустых ячеек
-        Dim bestRow As Integer = 0
-        Dim bestCnt As Integer = 0
+        Dim bestRow As Integer = 0 : Dim bestCnt As Integer = 0
         For r As Integer = 0 To Math.Min(19, rows.Count - 1)
             Dim cnt As Integer = 0
             For Each v As String In rows(r)
                 If Not String.IsNullOrWhiteSpace(v) Then cnt += 1
             Next
-            If cnt > bestCnt Then
-                bestCnt = cnt
-                bestRow = r
-            End If
+            If cnt > bestCnt Then bestCnt = cnt : bestRow = r
         Next
         Return bestRow
     End Function
 
-    ' ── Построить маппинг заголовков → индекс колонки ──
     Private Shared Function BuildHeaderMap(headerRow As List(Of String)) As Dictionary(Of String, Integer)
         Dim map As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         For c As Integer = 0 To headerRow.Count - 1
@@ -1190,12 +1188,11 @@ Public NotInheritable Class ExcelLoader
         Return map
     End Function
 
-    ' ── Нормализация заголовков + алиасы ──
     Private Shared Function NormalizeAndAlias(raw As String) As String
         If raw Is Nothing Then Return ""
         Dim n As String = raw.Trim().ToUpperInvariant()
         Select Case n
-            Case "MODEL_PATH","MODEL","P","ПУТЬ","ФАЙЛ","МОДЕЛЬ","PATH","FILEPATH","FILE_PATH","ИПТ","IPT" : Return "MODEL_PATH"
+            Case "MODEL_PATH","MODEL","P","ПУТЬ","ФАЙЛ","МОДЕЛЬ","PATH","FILEPATH","FILE_PATH" : Return "MODEL_PATH"
             Case "CODE","ШИФР","АРТИКУЛ","ОБОЗНАЧЕНИЕ"                : Return "CODE"
             Case "PROJECT_NAME","PROJECT","ОБЪЕКТ","ПРОЕКТ"           : Return "PROJECT_NAME"
             Case "DRAWING_NAME","TITLE","НАИМЕНОВАНИЕ","ИМЯ ЧЕРТЕЖА" : Return "DRAWING_NAME"
@@ -1223,13 +1220,10 @@ Public NotInheritable Class ExcelLoader
         Dim src As String() = {"А","Б","В","Г","Д","Е","Ё","Ж","З","И","Й","К","Л","М","Н","О","П","Р","С","Т","У","Ф","Х","Ц","Ч","Ш","Щ","Ъ","Ы","Ь","Э","Ю","Я"}
         Dim dst As String() = {"A","B","V","G","D","E","E","ZH","Z","I","Y","K","L","M","N","O","P","R","S","T","U","F","H","C","CH","SH","SCH","","Y","","E","YU","YA"}
         Dim r As String = s
-        For i As Integer = 0 To src.Length - 1
-            r = r.Replace(src(i), dst(i))
-        Next
+        For i As Integer = 0 To src.Length - 1 : r = r.Replace(src(i), dst(i)) : Next
         Return r
     End Function
 
-    ' ── Поиск файла модели ──
     Private Shared Function ResolvePath(input As String, workspace As String, excelFile As String) As String
         If System.IO.File.Exists(input) Then Return System.IO.Path.GetFullPath(input)
         If Not String.IsNullOrWhiteSpace(workspace) Then
@@ -1258,23 +1252,17 @@ Public NotInheritable Class ExcelLoader
         Return String.Empty
     End Function
 
-    ' ── Вспомогательные ──
     Private Shared Function ColLetterToIndex(col As String) As Integer
         Dim idx As Integer = 0
         For Each ch As Char In col.ToUpper()
             idx = idx * 26 + (AscW(ch) - AscW("A"c) + 1)
         Next
-        Return idx - 1  ' 0-based
+        Return idx - 1
     End Function
 
     Private Shared Function XmlDecode(s As String) As String
         If s Is Nothing Then Return ""
-        s = s.Replace("&amp;",  "&")
-        s = s.Replace("&lt;",   "<")
-        s = s.Replace("&gt;",   ">")
-        s = s.Replace("&quot;", """")
-        s = s.Replace("&apos;", "'")
-        Return s
+        Return s.Replace("&amp;","&").Replace("&lt;","<").Replace("&gt;",">").Replace("&quot;","""").Replace("&apos;","'")
     End Function
 
     Private Shared Function SafeCell(value As Object) As String
