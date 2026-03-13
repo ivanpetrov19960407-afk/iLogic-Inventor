@@ -591,8 +591,8 @@ Public Class StoneAlbumRule
             If sheet.Border IsNot Nothing Then sheet.Border.Delete()
         Catch : End Try
         _app.SilentOperation = True
-        ' ИСПРАВЛЕНО: правильный метод AddCustomBorder (не AddBorder)
-        sheet.AddCustomBorder(def)
+        ' ИСПРАВЛЕНО: правильный метод AddBorder (не AddCustomBorder)
+        sheet.AddBorder(def, Nothing)
         _app.SilentOperation = False
     End Sub
 
