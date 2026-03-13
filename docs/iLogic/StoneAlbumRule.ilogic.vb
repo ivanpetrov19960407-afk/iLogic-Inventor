@@ -1,8 +1,11 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.8
+' StoneAlbumRule.ilogic.vb  –  v3.9
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.9: FIX — ps array 0-based (New String(6){}), ps(k) вместо ps(k+1)
+'       AddTitleBlock — убран Nothing (второй аргумент пустой)
+'       4-view layout: LARGE=Front, ISO=IsoTopRight(ShadedWithEdges), SMALL=Top, WIDE=Right
 ' v3.8: ГЛАВНЫЙ ФИКС — AddCustomBorder → AddBorder (правильный метод API)
 '       AddCustomBorder не существует в iLogic — ошибка во всех прошлых версиях
 '       sheet.Border/TitleBlock ReadOnly — убраны fallback-присвоения
@@ -256,12 +259,12 @@ Public Class AlbumBuilder
             Catch ex As Exception
                 Debug.Print("WARN TBDef.Item: " & ex.Message)
             End Try
-            Dim ps(8) As String
+            Dim ps() As String = New String(6) {}
             Dim order As String() = {"CODE","PROJECT_NAME","DRAWING_NAME","ORG_NAME","STAGE","SHEET","SHEETS"}
             For k As Integer = 0 To order.Length - 1
                 Dim v As String = String.Empty
                 item.Prompts.TryGetValue(order(k), v)
-                ps(k + 1) = If(String.IsNullOrEmpty(v), "", v)
+                ps(k) = If(String.IsNullOrEmpty(v), "", v)
             Next
             ' v3.8: AddTitleBlock + fallback sheet.TitleBlock = name
             _app.SilentOperation = True
@@ -272,7 +275,7 @@ Public Class AlbumBuilder
             Dim tbOk As Boolean = False
             If tbDef IsNot Nothing Then
                 Try
-                    sheet.AddTitleBlock(tbDef, Nothing, ps)
+                    sheet.AddTitleBlock(tbDef, , ps)
                     tbOk = True
                     Debug.Print("AddTitleBlock OK на листе: " & sheet.Name)
                 Catch ex As Exception
@@ -382,60 +385,38 @@ Public Class AlbumBuilder
         Dim csLarge As SlotRect = ContentSlot(slotLarge, cPad, capClear)
         Dim csIso   As SlotRect = ContentSlot(slotIso,   cPad, cPad)    ' ISO — без подписи
 
-        ' 4. Измеряем все ориентации через probe-виды
+        ' 4. Измеряем 4 ориентации через probe-виды
+        '    v3.9: LARGE=Front, SMALL=Top, WIDE=Right, ISO=IsoTopRight(ShadedWithEdges)
         Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mTop   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation,   DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-        Dim mLeft  As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kLeftViewOrientation,  DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-        Dim mIso   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle)
+        Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
+        Dim mIso   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedWithEdgesDrawingViewStyle)
 
-        If mFront Is Nothing OrElse mTop Is Nothing OrElse mLeft Is Nothing Then
+        If mFront Is Nothing OrElse mTop Is Nothing OrElse mRight Is Nothing Then
             Debug.Print("WARN: не удалось измерить виды")
             Return False
         End If
 
-        ' 5. Подбираем масштабы для двух кандидатов: [FRONT,TOP,LEFT] и [FRONT,LEFT,TOP]
-        Dim bestSmallScale As Double = 0
-        Dim bestMainScale  As Double = 0
-        Dim bestIsoScale   As Double = 0
-        Dim bestSmallMeasure As ViewMeasure = Nothing
-        Dim bestWideMeasure  As ViewMeasure = Nothing
-        Dim bestLargeMeasure As ViewMeasure = Nothing
+        ' 5. Подбираем масштабы: LARGE=Front, SMALL=Top, WIDE=Right
+        Dim largeScale As Double = ScaleToFit(csLarge, mFront, ORTHO_SCALE_MARGIN)
+        Dim smallScale As Double = ScaleToFit(csSmall, mTop,   ORTHO_SCALE_MARGIN)
+        Dim wideScale  As Double = ScaleToFit(csWide,  mRight, ORTHO_SCALE_MARGIN)
+        Dim isoScale   As Double = 0
 
-        Dim candidates As ViewMeasure()() = {
-            New ViewMeasure() {mFront, mTop,  mLeft},
-            New ViewMeasure() {mFront, mLeft, mTop}
-        }
-
-        For Each cand As ViewMeasure() In candidates
-            Dim sScale As Double = ScaleToFit(csSmall, cand(0), ORTHO_SCALE_MARGIN)
-            Dim wScale As Double = ScaleToFit(csWide,  cand(1), ORTHO_SCALE_MARGIN)
-            Dim lScale As Double = ScaleToFit(csLarge, cand(2), ORTHO_SCALE_MARGIN)
-            If sScale > 0 AndAlso wScale > 0 AndAlso lScale > 0 Then
-                Dim mainSc As Double = Math.Min(wScale, lScale)
-                If mainSc > bestMainScale Then
-                    bestMainScale  = mainSc
-                    bestSmallScale = sScale
-                    bestSmallMeasure = cand(0)
-                    bestWideMeasure  = cand(1)
-                    bestLargeMeasure = cand(2)
-                End If
-            End If
-        Next
-
-        If bestMainScale <= 0 OrElse bestSmallScale <= 0 Then
+        If largeScale <= 0 OrElse smallScale <= 0 OrElse wideScale <= 0 Then
             Debug.Print("WARN: не удалось подобрать масштаб")
             Return False
         End If
-        Debug.Print("Scales: SMALL=" & bestSmallScale & " MAIN=" & bestMainScale & " ISO=" & bestIsoScale)
 
         If mIso IsNot Nothing Then
-            bestIsoScale = ScaleToFit(csIso, mIso, ISO_SCALE_MARGIN)
+            isoScale = ScaleToFit(csIso, mIso, ISO_SCALE_MARGIN)
         End If
+        Debug.Print("Scales: LARGE=" & largeScale & " SMALL=" & smallScale & " WIDE=" & wideScale & " ISO=" & isoScale)
 
         ' 6. Размещаем виды в слоты
-        Dim v1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, bestSmallMeasure, bestSmallScale, csSmall)
-        Dim v2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, bestWideMeasure,  bestMainScale,  csWide)
-        Dim v3 As DrawingView = PlaceViewInSlot(sheet, modelDoc, bestLargeMeasure, bestMainScale,  csLarge)
+        Dim v1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, mFront, largeScale, csLarge)
+        Dim v2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, mTop,   smallScale, csSmall)
+        Dim v3 As DrawingView = PlaceViewInSlot(sheet, modelDoc, mRight, wideScale,  csWide)
 
         If v1 Is Nothing OrElse v2 Is Nothing OrElse v3 Is Nothing Then
             Debug.Print("WARN: не все основные виды размещены")
@@ -443,9 +424,9 @@ Public Class AlbumBuilder
         End If
 
         ' ISO
-        If bestIsoScale > 0 AndAlso mIso IsNot Nothing Then
+        If isoScale > 0 AndAlso mIso IsNot Nothing Then
             Try
-                Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, mIso, bestIsoScale, csIso)
+                Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, mIso, isoScale, csIso)
             Catch
             End Try
         End If
