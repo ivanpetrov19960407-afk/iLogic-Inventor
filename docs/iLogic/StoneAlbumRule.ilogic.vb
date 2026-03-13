@@ -14,7 +14,7 @@ Option Explicit On
 Imports Inventor
 Imports System
 Imports System.Collections.Generic
-Imports System.IO
+' Imports System.IO  -- убрано: конфликт Path/File с Inventor (используем полные пути System.IO.Path / System.IO.File)
 
 ' ================================================================
 '  ТОЧКА ВХОДА
@@ -35,7 +35,7 @@ Sub Main()
     End If
 
     If String.IsNullOrWhiteSpace(workspacePath) Then
-        workspacePath = Path.GetDirectoryName(excelPath)
+        workspacePath = System.IO.Path.GetDirectoryName(excelPath)
     End If
 
     Dim doc As DrawingDocument = TryCast(ThisApplication.ActiveDocument, DrawingDocument)
@@ -148,7 +148,7 @@ Public Class StoneAlbumRule
             borderDef As BorderDefinition,
             titleDef As TitleBlockDefinition)
 
-        If Not File.Exists(item.ModelPath) Then
+        If Not System.IO.File.Exists(item.ModelPath) Then
             Logger.Warn("Файл модели не найден: " & item.ModelPath)
             Return
         End If
@@ -156,7 +156,7 @@ Public Class StoneAlbumRule
         Dim modelDoc As Document = Nothing
         Try
             ' Лист
-            Dim sheetName As String = SHEET_PREFIX & Path.GetFileNameWithoutExtension(item.ModelPath)
+            Dim sheetName As String = SHEET_PREFIX & System.IO.Path.GetFileNameWithoutExtension(item.ModelPath)
             Dim sheet As Sheet = EnsureSheet(doc, sheetName)
             sheet.Activate()
 
@@ -199,7 +199,7 @@ Public Class StoneAlbumRule
     Private Sub RemoveStaleSheets(doc As DrawingDocument, items As List(Of AlbumItem))
         Dim activeNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         For Each item As AlbumItem In items
-            activeNames.Add(SHEET_PREFIX & Path.GetFileNameWithoutExtension(item.ModelPath))
+            activeNames.Add(SHEET_PREFIX & System.IO.Path.GetFileNameWithoutExtension(item.ModelPath))
         Next
 
         Dim toDelete As New List(Of Sheet)()
@@ -841,9 +841,15 @@ Public Class StoneAlbumRule
     '  ЛОГГЕР
     ' ================================================================
     Private NotInheritable Class Logger
-        Public Shared Sub Info(msg As String)  : Debug.Print("INFO:  " & msg) : End Sub
-        Public Shared Sub Warn(msg As String)  : Debug.Print("WARN:  " & msg) : End Sub
-        Public Shared Sub [Error](msg As String) : Debug.Print("ERROR: " & msg) : End Sub
+        Public Shared Sub Info(msg As String)
+            Debug.Print("INFO:  " & msg)
+        End Sub
+        Public Shared Sub Warn(msg As String)
+            Debug.Print("WARN:  " & msg)
+        End Sub
+        Public Shared Sub [Error](msg As String)
+            Debug.Print("ERROR: " & msg)
+        End Sub
     End Class
 
 End Class
@@ -978,7 +984,7 @@ Public NotInheritable Class ExcelLoader
 
         ' 2) Транслитерация + нормализация (для нестандартных русских заголовков)
         Dim t As String = Transliterate(n)
-        t = Regex.Replace(t, "[^A-Z0-9]+", "_").Trim("_"c)
+        t = System.Text.RegularExpressions.Regex.Replace(t, "[^A-Z0-9]+", "_").Trim("_"c)
         Select Case t
             Case "MODEL_PATH", "MODEL", "P"     : Return "MODEL_PATH"
             Case "CODE", "SHIFR"                : Return "CODE"
@@ -1004,27 +1010,27 @@ Public NotInheritable Class ExcelLoader
     End Function
 
     Private Shared Function ResolvePath(input As String, workspace As String, excelFile As String) As String
-        If File.Exists(input) Then Return Path.GetFullPath(input)
+        If System.IO.File.Exists(input) Then Return System.IO.Path.GetFullPath(input)
 
         If Not String.IsNullOrWhiteSpace(workspace) Then
-            Dim c As String = Path.Combine(workspace, input)
-            If File.Exists(c) Then Return Path.GetFullPath(c)
+            Dim c As String = System.IO.Path.Combine(workspace, input)
+            If System.IO.File.Exists(c) Then Return System.IO.Path.GetFullPath(c)
         End If
 
-        Dim excelDir As String = Path.GetDirectoryName(excelFile)
+        Dim excelDir As String = System.IO.Path.GetDirectoryName(excelFile)
         If Not String.IsNullOrWhiteSpace(excelDir) Then
-            Dim c As String = Path.Combine(excelDir, input)
-            If File.Exists(c) Then Return Path.GetFullPath(c)
+            Dim c As String = System.IO.Path.Combine(excelDir, input)
+            If System.IO.File.Exists(c) Then Return System.IO.Path.GetFullPath(c)
         End If
 
         ' Поиск по имени файла рекурсивно в папках проекта
-        Dim fileName As String = Path.GetFileName(input)
+        Dim fileName As String = System.IO.Path.GetFileName(input)
         If Not fileName.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase) Then fileName &= ".ipt"
 
         For Each root As String In {workspace, excelDir}
             If String.IsNullOrWhiteSpace(root) OrElse Not Directory.Exists(root) Then Continue For
             Dim found As String = Directory.EnumerateFiles(root, fileName, SearchOption.AllDirectories).FirstOrDefault()
-            If Not String.IsNullOrEmpty(found) Then Return Path.GetFullPath(found)
+            If Not String.IsNullOrEmpty(found) Then Return System.IO.Path.GetFullPath(found)
         Next
 
         Return String.Empty
