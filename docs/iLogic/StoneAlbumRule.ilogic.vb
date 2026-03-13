@@ -43,7 +43,14 @@ Sub Main()
         Return
     End If
 
-    ' Дефолт папки — рядом с Excel
+    ' Дефолт: из активного .ipj проекта Inventor, затем рядом с Excel
+    If String.IsNullOrWhiteSpace(workspacePath) Then
+        Try
+            Dim proj As Object = ThisApplication.DesignProjectManager.ActiveDesignProject
+            If proj IsNot Nothing Then workspacePath = CStr(proj.WorkspacePath)
+        Catch
+        End Try
+    End If
     If String.IsNullOrWhiteSpace(workspacePath) Then
         workspacePath = System.IO.Path.GetDirectoryName(excelPath)
     End If
@@ -177,24 +184,7 @@ Public Class StoneAlbumRule
             _app.SilentOperation = False
         End Try
 
-        ' Подсчёт: сколько листов с видами
-        Dim sheetsWithViews As Integer = 0
-        Dim sheetsNoModel   As Integer = 0
-        For Each it As AlbumItem In items
-            If System.IO.File.Exists(it.ModelPath) Then
-                sheetsWithViews += 1
-            Else
-                sheetsNoModel += 1
-            End If
-        Next
-        Dim summary As String = "Альбом собран: " & items.Count & " листов."
-        If sheetsNoModel > 0 Then
-            summary &= vbCrLf & vbCrLf &
-                "⚠ " & sheetsNoModel & " листов без видов — модели не найдены." & vbCrLf &
-                "Укажите правильную папку с .ipt файлами при следующем запуске."
-        End If
-        System.Windows.Forms.MessageBox.Show(summary, "Готово",
-            System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Information)
+        System.Windows.Forms.MessageBox.Show("Альбом собран: " & items.Count & " листов.", "Готово", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Information)
     End Sub
 
     ' ================================================================
@@ -206,9 +196,10 @@ Public Class StoneAlbumRule
             borderDef As BorderDefinition,
             titleDef As TitleBlockDefinition)
 
-        Dim modelDoc As Document = Nothing
+        Dim modelDoc   As Document = Nothing
+        Dim openedHere As Boolean  = False
         Try
-            ' ── Создаём / находим лист ──
+            ' -- Создаём / находим лист --
             Dim sheetName As String = SHEET_PREFIX & System.IO.Path.GetFileNameWithoutExtension(item.ModelPath)
             Dim sheet As Sheet = EnsureSheet(doc, sheetName)
             sheet.Activate()
@@ -222,23 +213,37 @@ Public Class StoneAlbumRule
             ' Убрать старые виды
             RemoveAllViews(sheet)
 
-            ' ── Рамка и штамп — всегда ──
+            ' -- Рамка и штамп всегда --
             ApplyBorder(sheet, borderDef)
             ApplyTitleBlock(sheet, titleDef, item.Prompts)
 
-            ' ── Виды — только если модель найдена ──
+            ' -- Виды только если модель найдена --
             If Not System.IO.File.Exists(item.ModelPath) Then
-                Logger.Warn("Модель не найдена, лист создан без видов: " & item.ModelPath)
-                Return
+                Logger.Warn("Модель не найдена, лист без видов: " & item.ModelPath)
+            Else
+                ' Сначала ищем уже открытый документ (как в VBA OpenModelDocumentEx)
+                For Each existingDoc As Document In _app.Documents
+                    If String.Equals(existingDoc.FullFileName, item.ModelPath, StringComparison.OrdinalIgnoreCase) Then
+                        modelDoc = existingDoc
+                        Exit For
+                    End If
+                Next
+                If modelDoc Is Nothing Then
+                    modelDoc = _app.Documents.Open(item.ModelPath, False)
+                    openedHere = (modelDoc IsNot Nothing)
+                End If
+                If modelDoc IsNot Nothing Then
+                    BuildViews(doc, sheet, modelDoc)
+                Else
+                    Logger.Warn("Не удалось открыть модель: " & item.ModelPath)
+                End If
             End If
-
-            modelDoc = _app.Documents.Open(item.ModelPath, False)
-            BuildViews(doc, sheet, modelDoc)
 
         Catch ex As Exception
             Logger.Error("Лист не собран для " & item.ModelPath & ": " & ex.Message)
         Finally
-            If modelDoc IsNot Nothing Then
+            ' Закрываем только если сами открыли
+            If modelDoc IsNot Nothing AndAlso openedHere Then
                 Try
                     modelDoc.Close(True)
                 Catch
@@ -249,6 +254,7 @@ Public Class StoneAlbumRule
 
     ' ================================================================
     '  УДАЛЕНИЕ УСТАРЕВШИХ ЛИСТОВ
+
     ' ================================================================
     Private Sub RemoveStaleSheets(doc As DrawingDocument, items As List(Of AlbumItem))
         Dim activeNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
