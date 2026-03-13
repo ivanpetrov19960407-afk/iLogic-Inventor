@@ -951,10 +951,16 @@ Public NotInheritable Class ExcelLoader
             End If
 
             ' ZipFile.OpenRead(path) → ZipArchive
-            Dim zipArchive As Object = zipFileType.InvokeMember(
-                "OpenRead",
-                System.Reflection.BindingFlags.Static Or System.Reflection.BindingFlags.Public Or System.Reflection.BindingFlags.InvokeMethod,
-                Nothing, Nothing, New Object() {excelPath})
+            Dim zipArchive As Object = Nothing
+            Try
+                zipArchive = zipFileType.InvokeMember(
+                    "OpenRead",
+                    System.Reflection.BindingFlags.Static Or System.Reflection.BindingFlags.Public Or System.Reflection.BindingFlags.InvokeMethod,
+                    Nothing, Nothing, New Object() {excelPath})
+            Catch invEx As System.Reflection.TargetInvocationException
+                Dim inner As Exception = If(invEx.InnerException, CType(invEx, Exception))
+                Throw New Exception("ZipFile.OpenRead не удался: " & inner.Message & " [" & inner.GetType().Name & "]")
+            End Try
 
             If zipArchive Is Nothing Then
                 Throw New Exception("ZipFile.OpenRead вернул Nothing для: " & excelPath)
@@ -1019,8 +1025,20 @@ Public NotInheritable Class ExcelLoader
             End Try
 
         Catch ex As Exception
+            ' Разворачиваем InnerException от Reflection
+            Dim realEx As Exception = ex
+            Do While realEx.InnerException IsNot Nothing
+                realEx = realEx.InnerException
+            Loop
+            Dim msg As String = realEx.Message
+            If TypeOf realEx Is System.IO.FileNotFoundException Then
+                msg = "Файл не найден: " & realEx.Message
+            ElseIf TypeOf realEx Is System.IO.InvalidDataException Then
+                msg = "Файл повреждён или не является .xlsx: " & realEx.Message
+            End If
             System.Windows.Forms.MessageBox.Show(
-                "Ошибка чтения Excel:" & vbCrLf & ex.Message,
+                "Ошибка чтения Excel:" & vbCrLf & msg & vbCrLf & vbCrLf &
+                "[" & realEx.GetType().Name & "]",
                 "Ошибка ExcelLoader",
                 System.Windows.Forms.MessageBoxButtons.OK,
                 System.Windows.Forms.MessageBoxIcon.Error)
