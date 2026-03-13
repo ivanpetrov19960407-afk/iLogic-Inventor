@@ -1,15 +1,14 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.3
+' StoneAlbumRule.ilogic.vb  –  v3.4
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
-' v3.3: ФИКС — рамка/штамп добавляются при SilentOperation=False
-'       ФИКС — doc.Update2 после рамки/штампа перед расчётом слотов
-'       ФИКС — MAX_AUTO_SCALE 8→20 (мелкие детали крупнее)
-'       ФИКС — TITLEBLOCK_GAP_RATIO 0.015→0.05 (больше отступ от штампа)
-'       ФИКС — Debug.Print SafeArea для диагностики
-'       v3.2: полный порт slot-based layout из VBA (SMALL/WIDE/LARGE/ISO).
-'       Все Try/Catch развёрнуты, "Alias"→"MapAlias", "shared"→"sst".
+' v3.4: ГЛАВНЫЙ ФИКС — убран глобальный SilentOperation=True из Build()
+'       SilentOperation=True только вокруг Documents.Open (тихое открытие)
+'       Все операции с видами (AddBaseView, Center, Update2)
+'       выполняются без SilentOperation — так виды правильно обновляются
+'       v3.3: рамка/штамп при SilentOperation=False, MAX_AUTO_SCALE=20.
+'       v3.2: полный порт slot-based layout, все Try/Catch развёрнуты.
 ' ================================================================
 
 Option Explicit On
@@ -144,7 +143,8 @@ Public Class AlbumBuilder
         Dim okCount   As Integer = 0
         Dim failCount As Integer = 0
 
-        _app.SilentOperation = True
+        ' SilentOperation НЕ включаем глобально — иначе виды не обновляются!
+        ' Точечно включается только вокруг Documents.Open внутри BuildOneSheet.
         Try
             Dim borderDef As BorderDefinition    = EnsureBorder(doc)
             Dim tbDef     As TitleBlockDefinition = EnsureTitleBlock(doc)
@@ -167,8 +167,8 @@ Public Class AlbumBuilder
                 End Try
             End If
 
-        Finally
-            _app.SilentOperation = False
+        Catch ex As Exception
+            Debug.Print("Build error: " & ex.Message)
         End Try
 
         Dim msg As String = "Альбом собран: " & okCount & " листов."
@@ -207,9 +207,7 @@ Public Class AlbumBuilder
                 End Try
             Next
 
-            ' Рамка СПДС — выключаем SilentOperation вокруг операций!
-            ' (с SilentOperation=True ряд версий Inventor тихо игнорирует AddCustomBorder)
-            _app.SilentOperation = False
+            ' Рамка СПДС
             Try
                 If sheet.Border IsNot Nothing Then sheet.Border.Delete()
             Catch
@@ -237,7 +235,6 @@ Public Class AlbumBuilder
             Catch ex As Exception
                 Debug.Print("WARN AddTitleBlock: " & ex.Message)
             End Try
-            _app.SilentOperation = True
 
             ' Обновляем документ — чтобы TitleBlock.RangeBox был актуален
             Try
@@ -253,8 +250,16 @@ Public Class AlbumBuilder
                 End If
             Next
             If modelDoc Is Nothing Then
-                modelDoc = _app.Documents.Open(item.ModelPath, False)
-                openedHere = (modelDoc IsNot Nothing)
+                ' SilentOperation=True только вокруг Open — без окна прогресса
+                _app.SilentOperation = True
+                Try
+                    modelDoc = _app.Documents.Open(item.ModelPath, False)
+                    openedHere = (modelDoc IsNot Nothing)
+                Catch ex As Exception
+                    Debug.Print("WARN Open: " & ex.Message)
+                Finally
+                    _app.SilentOperation = False
+                End Try
             End If
             If modelDoc Is Nothing Then
                 Debug.Print("WARN: не удалось открыть: " & item.ModelPath)
@@ -588,9 +593,12 @@ Public Class AlbumBuilder
         Catch
         End Try
         If def Is Nothing Then
-            _app.SilentOperation = True
-            def = doc.BorderDefinitions.Add(BORDER_NAME)
-            _app.SilentOperation = False
+            Try
+                def = doc.BorderDefinitions.Add(BORDER_NAME)
+            Catch ex As Exception
+                Debug.Print("WARN BorderDef.Add: " & ex.Message)
+                Return Nothing
+            End Try
         End If
 
         Dim sk As DrawingSketch = Nothing
@@ -625,9 +633,12 @@ Public Class AlbumBuilder
         Catch
         End Try
         If def Is Nothing Then
-            _app.SilentOperation = True
-            def = doc.TitleBlockDefinitions.Add(TB_NAME)
-            _app.SilentOperation = False
+            Try
+                def = doc.TitleBlockDefinitions.Add(TB_NAME)
+            Catch ex As Exception
+                Debug.Print("WARN TBDef.Add: " & ex.Message)
+                Return Nothing
+            End Try
         End If
 
         Dim sk As DrawingSketch = Nothing
