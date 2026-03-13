@@ -3,7 +3,9 @@
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
-' v3.8: ФИКС — AddCustomBorder → AddBorder (правильный метод API!)
+' v3.8: ГЛАВНЫЙ ФИКС — AddCustomBorder → AddBorder (правильный метод API)
+'       AddCustomBorder не существует в iLogic — ошибка во всех прошлых версиях
+'       sheet.Border/TitleBlock ReadOnly — убраны fallback-присвоения
 '       AddCustomBorder не существует в iLogic — это была главная ошибка с самого начала
 '       Fallback: sheet.Border = BORDER_NAME (iLogic-way)
 ' v3.7: ФИКС — SilentOperation=True вокруг AddCustomBorder и AddTitleBlock
@@ -243,13 +245,7 @@ Public Class AlbumBuilder
                 End Try
             End If
             If Not borderOk Then
-                ' Fallback: iLogic-способ — присвоение строки
-                Try
-                    sheet.Border = BORDER_NAME
-                    Debug.Print("sheet.Border = name OK: " & sheet.Name)
-                Catch ex2 As Exception
-                    Debug.Print("WARN sheet.Border=name: " & ex2.Message)
-                End Try
+                Debug.Print("WARN: рамка НЕ применилась на листе: " & sheet.Name)
             End If
             _app.SilentOperation = False
 
@@ -284,13 +280,7 @@ Public Class AlbumBuilder
                 End Try
             End If
             If Not tbOk Then
-                ' Fallback: iLogic-способ
-                Try
-                    sheet.TitleBlock = TB_NAME
-                    Debug.Print("sheet.TitleBlock = name OK: " & sheet.Name)
-                Catch ex2 As Exception
-                    Debug.Print("WARN sheet.TitleBlock=name: " & ex2.Message)
-                End Try
+                Debug.Print("WARN: штамп НЕ применился на листе: " & sheet.Name)
             End If
             _app.SilentOperation = False
 
