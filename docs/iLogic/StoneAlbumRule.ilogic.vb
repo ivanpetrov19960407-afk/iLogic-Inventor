@@ -20,12 +20,17 @@ Imports System.Collections.Generic
 '  ТОЧКА ВХОДА
 ' ================================================================
 Sub Main()
-    ' Пути передаются через параметры iLogic или меняются здесь
-    Dim excelPath As String     = iProperties.Value("Custom", "AlbumExcel")
-    Dim workspacePath As String = iProperties.Value("Custom", "AlbumWorkspace")
+    ' Пути: сначала читаем кастомные свойства документа (если заданы),
+    ' иначе спрашиваем через InputBox
+    Dim excelPath As String     = String.Empty
+    Dim workspacePath As String = String.Empty
     Dim sheetTabName As String  = "ALBUM"
 
-    ' Fallback: запрос пути через InputBox если параметр пустой
+    Try : excelPath     = iProperties.Value("Custom", "AlbumExcel")     : Catch : End Try
+    Try : workspacePath = iProperties.Value("Custom", "AlbumWorkspace") : Catch : End Try
+    Try : sheetTabName  = iProperties.Value("Custom", "AlbumSheet")     : Catch : End Try
+
+    ' Fallback: запрос пути через InputBox если свойство не задано
     If String.IsNullOrWhiteSpace(excelPath) Then
         excelPath = InputBox("Укажите полный путь к Excel-файлу альбома (.xlsx):", "Путь к Excel", "")
         If String.IsNullOrWhiteSpace(excelPath) Then Return
