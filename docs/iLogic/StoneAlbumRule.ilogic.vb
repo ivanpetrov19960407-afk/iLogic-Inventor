@@ -1,8 +1,10 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.12
+' StoneAlbumRule.ilogic.vb  –  v3.13
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.13: restore border re-edit (removed early return in EnsureBorder),
+'        cap view scale at 2.0 (was 100), hide probe labels in MeasureView
 ' v3.12: absolute slot geometry from A3 SPDS frame, no dynamic safeRect
 '        removed GetSheetSafeRect/InsetRect/ContentSlot calls from PlaceViewsSlotBased
 '        ScaleToFit cap raised from 20 to 100
@@ -504,6 +506,10 @@ Public Class AlbumBuilder
                 _app.TransientGeometry.CreatePoint2d(sheet.Width / 2, sheet.Height / 2),
                 PROBE_SCALE, orient, style)
             If probe Is Nothing Then Return Nothing
+            Try
+                probe.ShowLabel = False
+            Catch
+            End Try
             _app.ActiveDocument.Update2(True)
             Dim m As New ViewMeasure()
             m.UnitW = probe.Width  / PROBE_SCALE
@@ -541,7 +547,7 @@ Public Class AlbumBuilder
             sc90 = Math.Min(sw / m.UnitH, sh / m.UnitW) * margin
         End If
         Dim best As Double = Math.Max(sc0, sc90)
-        If best > 100.0 Then best = 100.0
+        If best > 2.0 Then best = 2.0
         If best < 0.02 Then Return 0
         Return best
     End Function
@@ -660,8 +666,6 @@ Public Class AlbumBuilder
             def = doc.BorderDefinitions.Item(BORDER_NAME)
         Catch
         End Try
-        If def IsNot Nothing Then Return def   ' v3.10: существует — не перерисовываем
-
         Try
             def = doc.BorderDefinitions.Add(BORDER_NAME)
         Catch ex As Exception
