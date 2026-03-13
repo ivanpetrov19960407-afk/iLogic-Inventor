@@ -129,7 +129,17 @@ Public Class StoneAlbumRule
 
         Dim items As List(Of AlbumItem) = ExcelLoader.Load(excelPath, workspacePath, sheetTabName)
         If items.Count = 0 Then
-            System.Windows.Forms.MessageBox.Show("Excel не содержит строк с MODEL_PATH.", "Ошибка", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning)
+            System.Windows.Forms.MessageBox.Show(
+                "Excel не содержит строк с MODEL_PATH." & vbCrLf & vbCrLf &
+                "Файл: " & excelPath & vbCrLf &
+                "Лист: " & sheetTabName & vbCrLf & vbCrLf &
+                "Убедитесь что:" & vbCrLf &
+                "  1. Лист называется '" & sheetTabName & "'" & vbCrLf &
+                "  2. Первая строка содержит заголовки (MODEL_PATH, CODE, ...)" & vbCrLf &
+                "  3. Ниже есть строки с данными",
+                "Ошибка — пустой список",
+                System.Windows.Forms.MessageBoxButtons.OK,
+                System.Windows.Forms.MessageBoxIcon.Warning)
             Return
         End If
 
@@ -890,7 +900,7 @@ End Class
 Public NotInheritable Class ExcelLoader
 
     Private Const DEFAULT_SHEET As String = "ALBUM"
-    Private Const HEADER_SCAN   As Integer = 20
+    Private Const HEADER_SCAN   As Integer = 10
 
     Public Shared Function Load(
             excelPath As String,
@@ -919,23 +929,7 @@ Public NotInheritable Class ExcelLoader
             Dim headerMap As Dictionary(Of String, Integer) = ReadHeaders(xlSheet, headerRow)
 
             If Not headerMap.ContainsKey("MODEL_PATH") Then
-                ' Собираем реальные заголовки для диагностики
-                Dim foundHeaders As New System.Text.StringBuilder()
-                Dim diagLastCol As Integer = CInt(xlSheet.Cells(1, xlSheet.Columns.Count).End(-4159).Column)
-                For diagR As Integer = 1 To Math.Min(5, CInt(xlSheet.UsedRange.Rows.Count))
-                    foundHeaders.Append("Строка " & diagR & ": ")
-                    For diagC As Integer = 1 To Math.Min(diagLastCol, 15)
-                        Dim cv As String = SafeCell(xlSheet.Cells(diagR, diagC).Value)
-                        If Not String.IsNullOrWhiteSpace(cv) Then
-                            foundHeaders.Append("[" & cv & "] ")
-                        End If
-                    Next
-                    foundHeaders.AppendLine()
-                Next
-                Throw New Exception("Колонка MODEL_PATH не найдена." & vbCrLf & vbCrLf &
-                    "Колонка должна называться одним из:" & vbCrLf &
-                    "  MODEL_PATH, MODEL, ПУТЬ, ФАЙЛ, МОДЕЛЬ" & vbCrLf & vbCrLf &
-                    "Найдено в файле:" & vbCrLf & foundHeaders.ToString())
+                Throw New Exception("Колонка MODEL_PATH (или алиас) не найдена.")
             End If
 
             Dim modelCol As Integer = headerMap("MODEL_PATH")
@@ -946,9 +940,10 @@ Public NotInheritable Class ExcelLoader
                 If String.IsNullOrWhiteSpace(rawPath) Then Continue For
 
                 Dim resolvedPath As String = ResolvePath(rawPath, workspacePath, excelPath)
+                ' Если файл не найден — используем rawPath как есть (Inventor сам выдаст ошибку при открытии)
                 If String.IsNullOrWhiteSpace(resolvedPath) Then
-                    Debug.Print("WARN:  MODEL_PATH не найден, строка пропущена: " & rawPath)
-                    Continue For
+                    Debug.Print("WARN:  MODEL_PATH не найден локально, используем как есть: " & rawPath)
+                    resolvedPath = rawPath
                 End If
 
                 Dim item As New StoneAlbumRule.AlbumItem()
@@ -990,11 +985,25 @@ Public NotInheritable Class ExcelLoader
     End Function
 
     Private Shared Function DetectHeaderRow(xlSheet As Object) As Integer
+        ' Сначала ищем строку с MODEL_PATH
         For r As Integer = 1 To HEADER_SCAN
             Dim map As Dictionary(Of String, Integer) = ReadHeaders(xlSheet, r)
             If map.ContainsKey("MODEL_PATH") Then Return r
         Next
-        Return 1
+        ' Если не нашли — ищем строку с наибольшим числом непустых ячеек (скорее всего заголовок)
+        Dim bestRow As Integer = 1
+        Dim bestCount As Integer = 0
+        For r As Integer = 1 To HEADER_SCAN
+            Dim cnt As Integer = 0
+            For c As Integer = 1 To 20
+                If Not String.IsNullOrWhiteSpace(SafeCell(xlSheet.Cells(r, c).Value)) Then cnt += 1
+            Next
+            If cnt > bestCount Then
+                bestCount = cnt
+                bestRow = r
+            End If
+        Next
+        Return bestRow
     End Function
 
     ' Чтение заголовков с полной транслитерацией и алиасами (как в VBA RKM_Excel.bas)
@@ -1018,7 +1027,7 @@ Public NotInheritable Class ExcelLoader
         ' 1) Алиас по точному совпадению (с поддержкой кириллицы)
         Dim n As String = raw.Trim().ToUpperInvariant()
         Select Case n
-            Case "MODEL_PATH", "MODEL", "P", "ПУТЬ", "ФАЙЛ", "МОДЕЛЬ", "PATH", "FILEPATH", "FILE_PATH", "ИПТ", "IPT", "МОДЕЛЬ_ПУТЬ", "ПУТЬ_К_ФАЙЛУ"    : Return "MODEL_PATH"
+            Case "MODEL_PATH", "MODEL", "P", "ПУТЬ", "ФАЙЛ", "МОДЕЛЬ"    : Return "MODEL_PATH"
             Case "CODE", "ШИФР", "АРТИКУЛ", "ОБОЗНАЧЕНИЕ"                : Return "CODE"
             Case "PROJECT_NAME", "PROJECT", "ОБЪЕКТ", "ПРОЕКТ"           : Return "PROJECT_NAME"
             Case "DRAWING_NAME", "TITLE", "НАИМЕНОВАНИЕ", "ИМЯ ЧЕРТЕЖА" : Return "DRAWING_NAME"
