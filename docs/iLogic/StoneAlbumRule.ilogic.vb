@@ -1,8 +1,11 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.9
+' StoneAlbumRule.ilogic.vb  –  v3.10
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.10: don't re-edit existing border/titleblock defs (fixes text overflow),
+'        smart view-slot matching (permutation-based best fit),
+'        dim notes via DrawingNotes (real mm from view scale)
 ' v3.9: FIX — ps array 0-based (New String(6){}), ps(k) вместо ps(k+1)
 '       AddTitleBlock — убран Nothing (второй аргумент пустой)
 '       4-view layout: LARGE=Front, ISO=IsoTopRight(Shaded), SMALL=Top, WIDE=Right
@@ -386,7 +389,6 @@ Public Class AlbumBuilder
         Dim csIso   As SlotRect = ContentSlot(slotIso,   cPad, cPad)    ' ISO — без подписи
 
         ' 4. Измеряем 4 ориентации через probe-виды
-        '    v3.9: LARGE=Front, SMALL=Top, WIDE=Right, ISO=IsoTopRight(ShadedWithEdges)
         Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mTop   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation,   DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
@@ -397,10 +399,36 @@ Public Class AlbumBuilder
             Return False
         End If
 
-        ' 5. Подбираем масштабы: LARGE=Front, SMALL=Top, WIDE=Right
-        Dim largeScale As Double = ScaleToFit(csLarge, mFront, ORTHO_SCALE_MARGIN)
-        Dim smallScale As Double = ScaleToFit(csSmall, mTop,   ORTHO_SCALE_MARGIN)
-        Dim wideScale  As Double = ScaleToFit(csWide,  mRight, ORTHO_SCALE_MARGIN)
+        ' 5. v3.10: Умный матчинг видов → слотам (перебор 6 перестановок)
+        Dim measures() As ViewMeasure = {mFront, mTop, mRight}
+        Dim slots() As SlotRect = {csLarge, csSmall, csWide}
+        Dim perms()() As Integer = {
+            New Integer(){0,1,2}, New Integer(){0,2,1},
+            New Integer(){1,0,2}, New Integer(){1,2,0},
+            New Integer(){2,0,1}, New Integer(){2,1,0}
+        }
+        Dim bestPerm() As Integer = perms(0)
+        Dim bestScore As Double = -1
+        For Each perm As Integer() In perms
+            Dim score As Double = 0
+            Dim valid As Boolean = True
+            For i As Integer = 0 To 2
+                Dim sc As Double = ScaleToFit(slots(i), measures(perm(i)), ORTHO_SCALE_MARGIN)
+                If sc <= 0 Then
+                    valid = False
+                    Exit For
+                End If
+                score += sc
+            Next
+            If valid AndAlso score > bestScore Then
+                bestScore = score
+                bestPerm = perm
+            End If
+        Next
+
+        Dim largeScale As Double = ScaleToFit(csLarge, measures(bestPerm(0)), ORTHO_SCALE_MARGIN)
+        Dim smallScale As Double = ScaleToFit(csSmall, measures(bestPerm(1)), ORTHO_SCALE_MARGIN)
+        Dim wideScale  As Double = ScaleToFit(csWide,  measures(bestPerm(2)), ORTHO_SCALE_MARGIN)
         Dim isoScale   As Double = 0
 
         If largeScale <= 0 OrElse smallScale <= 0 OrElse wideScale <= 0 Then
@@ -411,12 +439,15 @@ Public Class AlbumBuilder
         If mIso IsNot Nothing Then
             isoScale = ScaleToFit(csIso, mIso, ISO_SCALE_MARGIN)
         End If
-        Debug.Print("Scales: LARGE=" & largeScale & " SMALL=" & smallScale & " WIDE=" & wideScale & " ISO=" & isoScale)
+        Debug.Print("Scales: LARGE=" & largeScale & " SMALL=" & smallScale & " WIDE=" & wideScale & " ISO=" & isoScale & " perm=" & bestPerm(0) & bestPerm(1) & bestPerm(2))
 
-        ' 6. Размещаем виды в слоты
-        Dim v1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, mFront, largeScale, csLarge)
-        Dim v2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, mTop,   smallScale, csSmall)
-        Dim v3 As DrawingView = PlaceViewInSlot(sheet, modelDoc, mRight, wideScale,  csWide)
+        ' 6. Размещаем виды в слоты (с учётом найденной перестановки)
+        Dim v1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, measures(bestPerm(0)), largeScale, csLarge)
+        AddDimNotes(doc, sheet, v1, csLarge)
+        Dim v2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, measures(bestPerm(1)), smallScale, csSmall)
+        AddDimNotes(doc, sheet, v2, csSmall)
+        Dim v3 As DrawingView = PlaceViewInSlot(sheet, modelDoc, measures(bestPerm(2)), wideScale,  csWide)
+        AddDimNotes(doc, sheet, v3, csWide)
 
         If v1 Is Nothing OrElse v2 Is Nothing OrElse v3 Is Nothing Then
             Debug.Print("WARN: не все основные виды размещены")
@@ -427,12 +458,39 @@ Public Class AlbumBuilder
         If isoScale > 0 AndAlso mIso IsNot Nothing Then
             Try
                 Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, mIso, isoScale, csIso)
+                AddDimNotes(doc, sheet, isoV, csIso)
             Catch
             End Try
         End If
 
         Return True
     End Function
+
+    ' v3.10: Размеры через DrawingNotes — реальные мм из масштаба вида
+    Private Sub AddDimNotes(doc As DrawingDocument, sheet As Sheet,
+                             v As DrawingView, slot As SlotRect)
+        If v Is Nothing Then Return
+        Try
+            Dim sc As Double = v.Scale
+            If sc <= 0.0001 Then Return
+            Dim realW As Double = Math.Round(v.Width  / sc * 10.0)
+            Dim realH As Double = Math.Round(v.Height / sc * 10.0)
+            Dim cx As Double = (slot.L + slot.R) / 2.0
+            Dim cy As Double = (slot.B + slot.T) / 2.0
+            ' Горизонтальный размер — НАД видом
+            sheet.DrawingNotes.Add(
+                _app.TransientGeometry.CreatePoint2d(cx, slot.T + Cm(doc, 5.0)),
+                String.Format("{0:F0}", realW))
+            ' Вертикальный размер — СПРАВА от вида
+            If realH > 1 Then
+                sheet.DrawingNotes.Add(
+                    _app.TransientGeometry.CreatePoint2d(slot.R + Cm(doc, 6.0), cy),
+                    String.Format("{0:F0}", realH))
+            End If
+        Catch ex As Exception
+            Debug.Print("WARN AddDimNotes: " & ex.Message)
+        End Try
+    End Sub
 
     ' Создаёт probe-вид, замеряет размеры при масштабе 1:1, удаляет
     Private Function MeasureView(sheet As Sheet, modelDoc As Document,
@@ -624,14 +682,14 @@ Public Class AlbumBuilder
             def = doc.BorderDefinitions.Item(BORDER_NAME)
         Catch
         End Try
-        If def Is Nothing Then
-            Try
-                def = doc.BorderDefinitions.Add(BORDER_NAME)
-            Catch ex As Exception
-                Debug.Print("WARN BorderDef.Add: " & ex.Message)
-                Return Nothing
-            End Try
-        End If
+        If def IsNot Nothing Then Return def   ' v3.10: существует — не перерисовываем
+
+        Try
+            def = doc.BorderDefinitions.Add(BORDER_NAME)
+        Catch ex As Exception
+            Debug.Print("WARN BorderDef.Add: " & ex.Message)
+            Return Nothing
+        End Try
 
         Dim sk As DrawingSketch = Nothing
         def.Edit(sk)
@@ -664,14 +722,14 @@ Public Class AlbumBuilder
             def = doc.TitleBlockDefinitions.Item(TB_NAME)
         Catch
         End Try
-        If def Is Nothing Then
-            Try
-                def = doc.TitleBlockDefinitions.Add(TB_NAME)
-            Catch ex As Exception
-                Debug.Print("WARN TBDef.Add: " & ex.Message)
-                Return Nothing
-            End Try
-        End If
+        If def IsNot Nothing Then Return def   ' v3.10: существует — не перерисовываем
+
+        Try
+            def = doc.TitleBlockDefinitions.Add(TB_NAME)
+        Catch ex As Exception
+            Debug.Print("WARN TBDef.Add: " & ex.Message)
+            Return Nothing
+        End Try
 
         Dim sk As DrawingSketch = Nothing
         def.Edit(sk)
