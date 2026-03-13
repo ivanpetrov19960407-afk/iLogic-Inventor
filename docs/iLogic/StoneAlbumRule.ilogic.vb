@@ -1,14 +1,15 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.2
+' StoneAlbumRule.ilogic.vb  –  v3.3
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
-' v3.2: полный порт slot-based layout из VBA (SMALL/WIDE/LARGE/ISO)
-'       каждый вид вписывается в свой прямоугольный слот индивидуально.
-'       SafeArea считается по реальному TitleBlock.RangeBox.
-'       Все Try/Catch развёрнуты (iLogic не поддерживает однострочный
-'       Try:код:Catch:End Try внутри классов).
-'       "Alias"→"MapAlias", параметр "shared"→"sst".
+' v3.3: ФИКС — рамка/штамп добавляются при SilentOperation=False
+'       ФИКС — doc.Update2 после рамки/штампа перед расчётом слотов
+'       ФИКС — MAX_AUTO_SCALE 8→20 (мелкие детали крупнее)
+'       ФИКС — TITLEBLOCK_GAP_RATIO 0.015→0.05 (больше отступ от штампа)
+'       ФИКС — Debug.Print SafeArea для диагностики
+'       v3.2: полный порт slot-based layout из VBA (SMALL/WIDE/LARGE/ISO).
+'       Все Try/Catch развёрнуты, "Alias"→"MapAlias", "shared"→"sst".
 ' ================================================================
 
 Option Explicit On
@@ -116,13 +117,13 @@ Public Class AlbumBuilder
     Private Const SAFE_RIGHT_RATIO    As Double = 0.03
     Private Const SAFE_TOP_RATIO      As Double = 0.04
     Private Const SAFE_BOTTOM_RATIO   As Double = 0.03
-    Private Const TITLEBLOCK_GAP_RATIO As Double = 0.015
+    Private Const TITLEBLOCK_GAP_RATIO As Double = 0.05
     Private Const TECH_TOP_BAND_RATIO  As Double = 0.31
     Private Const TECH_RIGHT_COL_RATIO As Double = 0.34
     Private Const TECH_SMALL_SLOT_RATIO As Double = 0.38
     Private Const ORTHO_SCALE_MARGIN   As Double = 0.95
     Private Const ISO_SCALE_MARGIN     As Double = 0.9
-    Private Const MAX_AUTO_SCALE       As Double = 8.0
+    Private Const MAX_AUTO_SCALE       As Double = 20.0
     Private Const PROBE_SCALE          As Double = 0.1
     Private Const SLOT_CONTENT_PAD_MM  As Double = 2.0
     Private Const CAPTION_CLEAR_TOP_MM As Double = 7.0
@@ -206,7 +207,9 @@ Public Class AlbumBuilder
                 End Try
             Next
 
-            ' Рамка СПДС
+            ' Рамка СПДС — выключаем SilentOperation вокруг операций!
+            ' (с SilentOperation=True ряд версий Inventor тихо игнорирует AddCustomBorder)
+            _app.SilentOperation = False
             Try
                 If sheet.Border IsNot Nothing Then sheet.Border.Delete()
             Catch
@@ -214,7 +217,7 @@ Public Class AlbumBuilder
             Try
                 sheet.AddCustomBorder(borderDef)
             Catch ex As Exception
-                Debug.Print("WARN: AddCustomBorder: " & ex.Message)
+                Debug.Print("WARN AddCustomBorder: " & ex.Message)
             End Try
 
             ' Штамп Форма 3
@@ -232,7 +235,14 @@ Public Class AlbumBuilder
             Try
                 sheet.AddTitleBlock(tbDef, Nothing, ps)
             Catch ex As Exception
-                Debug.Print("WARN: AddTitleBlock: " & ex.Message)
+                Debug.Print("WARN AddTitleBlock: " & ex.Message)
+            End Try
+            _app.SilentOperation = True
+
+            ' Обновляем документ — чтобы TitleBlock.RangeBox был актуален
+            Try
+                doc.Update2(True)
+            Catch
             End Try
 
             ' Открываем модель
@@ -365,6 +375,7 @@ Public Class AlbumBuilder
             Debug.Print("WARN: не удалось подобрать масштаб")
             Return False
         End If
+        Debug.Print("Scales: SMALL=" & bestSmallScale & " MAIN=" & bestMainScale & " ISO=" & bestIsoScale)
 
         If mIso IsNot Nothing Then
             bestIsoScale = ScaleToFit(csIso, mIso, ISO_SCALE_MARGIN)
@@ -521,21 +532,28 @@ Public Class AlbumBuilder
             If sheet.TitleBlock IsNot Nothing Then
                 Dim rb As Box2d = sheet.TitleBlock.RangeBox
                 If rb IsNot Nothing Then
+                    ' Штамп в нижнем правом углу — MaxPoint.Y = верхний край штампа (в см)
+                    Dim tbTop As Double = Math.Max(rb.MinPoint.Y, rb.MaxPoint.Y)
                     Dim tbGapY As Double = h * TITLEBLOCK_GAP_RATIO
-                    If rb.MaxPoint.Y + tbGapY > wB Then
-                        wB = rb.MaxPoint.Y + tbGapY
+                    Debug.Print("SafeArea: sheet h=" & h & " tbTop=" & tbTop & " gap=" & tbGapY & " wB before=" & wB)
+                    If tbTop + tbGapY > wB Then
+                        wB = tbTop + tbGapY
                     End If
+                    Debug.Print("SafeArea: wB after=" & wB)
                 End If
             End If
-        Catch
+        Catch ex As Exception
+            Debug.Print("SafeArea TB err: " & ex.Message)
         End Try
 
-        ' Fallback если зона вырождена
+        ' Fallback если зона вырождена (высота < 20% листа)
         If wT <= wB + h * 0.2 Then
-            wB = h * 0.18
-            wT = h * 0.94
+            wB = h * 0.22   ' 22% от низа = ~65мм — больше чем штамп 55мм
+            wT = h * 0.96
+            Debug.Print("SafeArea: FALLBACK wB=" & wB & " wT=" & wT)
         End If
 
+        Debug.Print("SafeArea final: L=" & wL & " R=" & wR & " B=" & wB & " T=" & wT & " W=" & (wR-wL) & " H=" & (wT-wB))
         Return New SlotRect(wL, wR, wB, wT)
     End Function
 
@@ -1073,3 +1091,4 @@ Public NotInheritable Class XlsxReader
     End Function
 
 End Class
+
