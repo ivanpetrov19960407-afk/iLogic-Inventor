@@ -4,5 +4,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <RootNamespace>StoneDrawingAuto.Core</RootNamespace>
+    <AssemblyName>StoneDrawingAuto.Core</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 </Project>
