@@ -1,8 +1,10 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.6
+' StoneAlbumRule.ilogic.vb  –  v3.7
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.7: ФИКС — SilentOperation=True вокруг AddCustomBorder и AddTitleBlock
+'       (точно как в VBA ApplyRkmBorderToSheet / ApplyRkmTitleBlockToSheetWithPrompts)
 ' v3.6: ФИКС borderDef/tbDef — получаем в каждом BuildOneSheet заново
 '       из doc.BorderDefinitions.Item() чтобы не протухали после doc.Update2
 '       Убрали doc.Update2(True) после AddTitleBlock (мешал RCW)
@@ -221,6 +223,8 @@ Public Class AlbumBuilder
             Catch ex As Exception
                 Debug.Print("WARN BorderDef.Item: " & ex.Message)
             End Try
+            ' v3.7: весь блок удаления+добавления рамки в SilentOperation — точно как в VBA
+            _app.SilentOperation = True
             Try
                 If sheet.Border IsNot Nothing Then sheet.Border.Delete()
             Catch
@@ -235,6 +239,7 @@ Public Class AlbumBuilder
             Else
                 Debug.Print("WARN: borderDef = Nothing для листа: " & sheet.Name)
             End If
+            _app.SilentOperation = False
 
             ' Штамп Форма 3 — v3.6: тоже свежая ссылка
             Dim tbDef As TitleBlockDefinition = Nothing
@@ -243,10 +248,6 @@ Public Class AlbumBuilder
             Catch ex As Exception
                 Debug.Print("WARN TBDef.Item: " & ex.Message)
             End Try
-            Try
-                If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete()
-            Catch
-            End Try
             Dim ps(8) As String
             Dim order As String() = {"CODE","PROJECT_NAME","DRAWING_NAME","ORG_NAME","STAGE","SHEET","SHEETS"}
             For k As Integer = 0 To order.Length - 1
@@ -254,6 +255,12 @@ Public Class AlbumBuilder
                 item.Prompts.TryGetValue(order(k), v)
                 ps(k + 1) = If(String.IsNullOrEmpty(v), "", v)
             Next
+            ' v3.7: весь блок удаления+добавления штампа в SilentOperation — точно как в VBA
+            _app.SilentOperation = True
+            Try
+                If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete()
+            Catch
+            End Try
             If tbDef IsNot Nothing Then
                 Try
                     sheet.AddTitleBlock(tbDef, Nothing, ps)
@@ -264,6 +271,7 @@ Public Class AlbumBuilder
             Else
                 Debug.Print("WARN: tbDef = Nothing для листа: " & sheet.Name)
             End If
+            _app.SilentOperation = False
 
             ' v3.6: НЕ вызываем doc.Update2 здесь — это инвалидирует COM-ссылки
             ' TitleBlock.RangeBox читаем без принудительного обновления
