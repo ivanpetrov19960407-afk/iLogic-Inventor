@@ -177,7 +177,24 @@ Public Class StoneAlbumRule
             _app.SilentOperation = False
         End Try
 
-        System.Windows.Forms.MessageBox.Show("Альбом собран: " & items.Count & " листов.", "Готово", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Information)
+        ' Подсчёт: сколько листов с видами
+        Dim sheetsWithViews As Integer = 0
+        Dim sheetsNoModel   As Integer = 0
+        For Each it As AlbumItem In items
+            If System.IO.File.Exists(it.ModelPath) Then
+                sheetsWithViews += 1
+            Else
+                sheetsNoModel += 1
+            End If
+        Next
+        Dim summary As String = "Альбом собран: " & items.Count & " листов."
+        If sheetsNoModel > 0 Then
+            summary &= vbCrLf & vbCrLf &
+                "⚠ " & sheetsNoModel & " листов без видов — модели не найдены." & vbCrLf &
+                "Укажите правильную папку с .ipt файлами при следующем запуске."
+        End If
+        System.Windows.Forms.MessageBox.Show(summary, "Готово",
+            System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Information)
     End Sub
 
     ' ================================================================
@@ -189,14 +206,9 @@ Public Class StoneAlbumRule
             borderDef As BorderDefinition,
             titleDef As TitleBlockDefinition)
 
-        If Not System.IO.File.Exists(item.ModelPath) Then
-            Logger.Warn("Файл модели не найден: " & item.ModelPath)
-            Return
-        End If
-
         Dim modelDoc As Document = Nothing
         Try
-            ' Лист
+            ' ── Создаём / находим лист ──
             Dim sheetName As String = SHEET_PREFIX & System.IO.Path.GetFileNameWithoutExtension(item.ModelPath)
             Dim sheet As Sheet = EnsureSheet(doc, sheetName)
             sheet.Activate()
@@ -210,16 +222,17 @@ Public Class StoneAlbumRule
             ' Убрать старые виды
             RemoveAllViews(sheet)
 
-            ' Рамка
+            ' ── Рамка и штамп — всегда ──
             ApplyBorder(sheet, borderDef)
-
-            ' Штамп с данными из Excel
             ApplyTitleBlock(sheet, titleDef, item.Prompts)
 
-            ' Открыть 3D модель
-            modelDoc = _app.Documents.Open(item.ModelPath, False)
+            ' ── Виды — только если модель найдена ──
+            If Not System.IO.File.Exists(item.ModelPath) Then
+                Logger.Warn("Модель не найдена, лист создан без видов: " & item.ModelPath)
+                Return
+            End If
 
-            ' Расставить виды (алгоритм из VBA PR #51)
+            modelDoc = _app.Documents.Open(item.ModelPath, False)
             BuildViews(doc, sheet, modelDoc)
 
         Catch ex As Exception
