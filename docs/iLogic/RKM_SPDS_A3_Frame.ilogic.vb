@@ -130,7 +130,7 @@ Public Class SpdsFramer
         Catch
         End Try
         _app.SilentOperation = True
-        sheet.AddCustomBorder(def)   ' ВАЖНО: AddCustomBorder, не AddBorder
+        sheet.AddBorder(def, Nothing)   ' ВАЖНО: AddCustomBorder, не AddBorder
         _app.SilentOperation = False
     End Sub
 
