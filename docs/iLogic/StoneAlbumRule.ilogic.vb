@@ -242,25 +242,31 @@ Public Class AlbumBuilder
                 Debug.Print("WARN BorderDef.Item: " & ex.Message)
             End Try
             ' v3.8: AddBorder (не AddCustomBorder!) + fallback sheet.Border = name
-            _app.SilentOperation = True
-            Try
-                If sheet.Border IsNot Nothing Then sheet.Border.Delete()
-            Catch
-            End Try
             Dim borderOk As Boolean = False
-            If borderDef IsNot Nothing Then
+            Try
+                _app.SilentOperation = True
                 Try
-                    sheet.AddBorder(borderDef)
-                    borderOk = True
-                    Debug.Print("AddBorder OK на листе: " & sheet.Name)
-                Catch ex As Exception
-                    Debug.Print("WARN AddBorder: " & ex.Message)
+                    If sheet.Border IsNot Nothing Then
+                        sheet.Border.Delete()
+                    End If
+                Catch
                 End Try
-            End If
+
+                If borderDef IsNot Nothing Then
+                    Try
+                        sheet.AddBorder(borderDef)
+                        borderOk = True
+                        Debug.Print("AddBorder OK на листе: " & sheet.Name)
+                    Catch ex As Exception
+                        Debug.Print("WARN AddBorder: " & ex.Message)
+                    End Try
+                End If
+            Finally
+                _app.SilentOperation = False
+            End Try
             If Not borderOk Then
                 Debug.Print("WARN: рамка НЕ применилась на листе: " & sheet.Name)
             End If
-            _app.SilentOperation = False
 
             ' Штамп Форма 3 — v3.6: тоже свежая ссылка
             Dim tbDef As TitleBlockDefinition = Nothing
@@ -277,25 +283,31 @@ Public Class AlbumBuilder
                 ps(k) = If(String.IsNullOrEmpty(v), "", v)
             Next
             ' v3.8: AddTitleBlock + fallback sheet.TitleBlock = name
-            _app.SilentOperation = True
-            Try
-                If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete()
-            Catch
-            End Try
             Dim tbOk As Boolean = False
-            If tbDef IsNot Nothing Then
+            Try
+                _app.SilentOperation = True
                 Try
-                    sheet.AddTitleBlock(tbDef, , ps)
-                    tbOk = True
-                    Debug.Print("AddTitleBlock OK на листе: " & sheet.Name)
-                Catch ex As Exception
-                    Debug.Print("WARN AddTitleBlock: " & ex.Message)
+                    If sheet.TitleBlock IsNot Nothing Then
+                        sheet.TitleBlock.Delete()
+                    End If
+                Catch
                 End Try
-            End If
+
+                If tbDef IsNot Nothing Then
+                    Try
+                        sheet.AddTitleBlock(tbDef, , ps)
+                        tbOk = True
+                        Debug.Print("AddTitleBlock OK на листе: " & sheet.Name)
+                    Catch ex As Exception
+                        Debug.Print("WARN AddTitleBlock: " & ex.Message)
+                    End Try
+                End If
+            Finally
+                _app.SilentOperation = False
+            End Try
             If Not tbOk Then
                 Debug.Print("WARN: штамп НЕ применился на листе: " & sheet.Name)
             End If
-            _app.SilentOperation = False
 
             ' v3.6: НЕ вызываем doc.Update2 здесь — это инвалидирует COM-ссылки
             ' TitleBlock.RangeBox читаем без принудительного обновления
@@ -666,12 +678,20 @@ Public Class AlbumBuilder
             def = doc.BorderDefinitions.Item(BORDER_NAME)
         Catch
         End Try
-        Try
-            def = doc.BorderDefinitions.Add(BORDER_NAME)
-        Catch ex As Exception
-            Debug.Print("WARN BorderDef.Add: " & ex.Message)
-            Return Nothing
-        End Try
+
+        If def Is Nothing Then
+            Try
+                def = doc.BorderDefinitions.Add(BORDER_NAME)
+            Catch ex As Exception
+                Debug.Print("WARN BorderDef.Add: " & ex.Message)
+                Try
+                    def = doc.BorderDefinitions.Item(BORDER_NAME)
+                Catch ex2 As Exception
+                    Debug.Print("WARN BorderDef.Item fallback: " & ex2.Message)
+                    Return Nothing
+                End Try
+            End Try
+        End If
 
         Dim sk As DrawingSketch = Nothing
         def.Edit(sk)
@@ -704,7 +724,9 @@ Public Class AlbumBuilder
             def = doc.TitleBlockDefinitions.Item(TB_NAME)
         Catch
         End Try
-        If def IsNot Nothing Then Return def   ' v3.10: существует — не перерисовываем
+        ' Если определение уже есть, не перерисовываем:
+        ' это сохраняет пользовательские правки и гарантирует стабильную привязку Prompt-ов.
+        If def IsNot Nothing Then Return def
 
         Try
             def = doc.TitleBlockDefinitions.Add(TB_NAME)
@@ -1174,5 +1196,4 @@ Public NotInheritable Class XlsxReader
     End Function
 
 End Class
-
 

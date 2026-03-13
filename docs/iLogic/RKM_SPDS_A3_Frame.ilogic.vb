@@ -28,7 +28,8 @@ Sub Main()
     Try
         sheet.Size        = DrawingSheetSizeEnum.kA3DrawingSheetSize
         sheet.Orientation = PageOrientationTypeEnum.kLandscapePageOrientation
-    Catch : End Try
+    Catch
+    End Try
 
     ' Проверить размер
     Dim wMm As Double = doc.UnitsOfMeasure.ConvertUnits(sheet.Width,  UnitsTypeEnum.kCentimeterLengthUnits, UnitsTypeEnum.kMillimeterLengthUnits)
@@ -91,9 +92,12 @@ Public Class SpdsFramer
         End Try
 
         If def Is Nothing Then
-            _app.SilentOperation = True
-            def = doc.BorderDefinitions.Add(BORDER_NAME)
-            _app.SilentOperation = False
+            Try
+                _app.SilentOperation = True
+                def = doc.BorderDefinitions.Add(BORDER_NAME)
+            Finally
+                _app.SilentOperation = False
+            End Try
         End If
 
         Dim sk As DrawingSketch = Nothing
@@ -126,12 +130,18 @@ Public Class SpdsFramer
 
     Public Sub ApplyBorder(sheet As Sheet, def As BorderDefinition)
         Try
-            If sheet.Border IsNot Nothing Then sheet.Border.Delete()
+            If sheet.Border IsNot Nothing Then
+                sheet.Border.Delete()
+            End If
         Catch
         End Try
-        _app.SilentOperation = True
-        sheet.AddCustomBorder(def)
-        _app.SilentOperation = False
+
+        Try
+            _app.SilentOperation = True
+            sheet.AddBorder(def)
+        Finally
+            _app.SilentOperation = False
+        End Try
     End Sub
 
     ' --- Штамп ---
@@ -143,9 +153,12 @@ Public Class SpdsFramer
         End Try
 
         If def Is Nothing Then
-            _app.SilentOperation = True
-            def = doc.TitleBlockDefinitions.Add(TB_NAME)
-            _app.SilentOperation = False
+            Try
+                _app.SilentOperation = True
+                def = doc.TitleBlockDefinitions.Add(TB_NAME)
+            Finally
+                _app.SilentOperation = False
+            End Try
         End If
 
         Dim sk As DrawingSketch = Nothing
@@ -176,21 +189,23 @@ Public Class SpdsFramer
 
     Public Sub ApplyTitleBlock(sheet As Sheet, def As TitleBlockDefinition, prompts As Dictionary(Of String, String))
         Try
-            If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete()
+            If sheet.TitleBlock IsNot Nothing Then
+                sheet.TitleBlock.Delete()
+            End If
         Catch
         End Try
 
         Dim order As String() = {"CODE","PROJECT_NAME","DRAWING_NAME","ORG_NAME","STAGE","SHEET","SHEETS"}
-        Dim ps(8) As String
+        Dim ps() As String = New String(6) {}
         For i As Integer = 0 To order.Length - 1
             Dim v As String = String.Empty
             If prompts IsNot Nothing Then prompts.TryGetValue(order(i), v)
-            ps(i + 1) = If(String.IsNullOrEmpty(v), String.Empty, v)
+            ps(i) = If(String.IsNullOrEmpty(v), String.Empty, v)
         Next
 
         Try
             _app.SilentOperation = True
-            sheet.AddTitleBlock(def, Nothing, ps)
+            sheet.AddTitleBlock(def, , ps)
         Catch ex As Exception
             Debug.Print("WARN:  AddTitleBlock: " & ex.Message)
         Finally
