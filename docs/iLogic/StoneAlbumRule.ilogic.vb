@@ -1,8 +1,11 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.7
+' StoneAlbumRule.ilogic.vb  –  v3.8
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.8: ФИКС — AddCustomBorder → AddBorder (правильный метод API!)
+'       AddCustomBorder не существует в iLogic — это была главная ошибка с самого начала
+'       Fallback: sheet.Border = BORDER_NAME (iLogic-way)
 ' v3.7: ФИКС — SilentOperation=True вокруг AddCustomBorder и AddTitleBlock
 '       (точно как в VBA ApplyRkmBorderToSheet / ApplyRkmTitleBlockToSheetWithPrompts)
 ' v3.6: ФИКС borderDef/tbDef — получаем в каждом BuildOneSheet заново
@@ -223,21 +226,30 @@ Public Class AlbumBuilder
             Catch ex As Exception
                 Debug.Print("WARN BorderDef.Item: " & ex.Message)
             End Try
-            ' v3.7: весь блок удаления+добавления рамки в SilentOperation — точно как в VBA
+            ' v3.8: AddBorder (не AddCustomBorder!) + fallback sheet.Border = name
             _app.SilentOperation = True
             Try
                 If sheet.Border IsNot Nothing Then sheet.Border.Delete()
             Catch
             End Try
+            Dim borderOk As Boolean = False
             If borderDef IsNot Nothing Then
                 Try
-                    sheet.AddCustomBorder(borderDef)
-                    Debug.Print("AddCustomBorder OK на листе: " & sheet.Name)
+                    sheet.AddBorder(borderDef)
+                    borderOk = True
+                    Debug.Print("AddBorder OK на листе: " & sheet.Name)
                 Catch ex As Exception
-                    Debug.Print("WARN AddCustomBorder: " & ex.Message)
+                    Debug.Print("WARN AddBorder: " & ex.Message)
                 End Try
-            Else
-                Debug.Print("WARN: borderDef = Nothing для листа: " & sheet.Name)
+            End If
+            If Not borderOk Then
+                ' Fallback: iLogic-способ — присвоение строки
+                Try
+                    sheet.Border = BORDER_NAME
+                    Debug.Print("sheet.Border = name OK: " & sheet.Name)
+                Catch ex2 As Exception
+                    Debug.Print("WARN sheet.Border=name: " & ex2.Message)
+                End Try
             End If
             _app.SilentOperation = False
 
@@ -255,21 +267,30 @@ Public Class AlbumBuilder
                 item.Prompts.TryGetValue(order(k), v)
                 ps(k + 1) = If(String.IsNullOrEmpty(v), "", v)
             Next
-            ' v3.7: весь блок удаления+добавления штампа в SilentOperation — точно как в VBA
+            ' v3.8: AddTitleBlock + fallback sheet.TitleBlock = name
             _app.SilentOperation = True
             Try
                 If sheet.TitleBlock IsNot Nothing Then sheet.TitleBlock.Delete()
             Catch
             End Try
+            Dim tbOk As Boolean = False
             If tbDef IsNot Nothing Then
                 Try
                     sheet.AddTitleBlock(tbDef, Nothing, ps)
+                    tbOk = True
                     Debug.Print("AddTitleBlock OK на листе: " & sheet.Name)
                 Catch ex As Exception
                     Debug.Print("WARN AddTitleBlock: " & ex.Message)
                 End Try
-            Else
-                Debug.Print("WARN: tbDef = Nothing для листа: " & sheet.Name)
+            End If
+            If Not tbOk Then
+                ' Fallback: iLogic-способ
+                Try
+                    sheet.TitleBlock = TB_NAME
+                    Debug.Print("sheet.TitleBlock = name OK: " & sheet.Name)
+                Catch ex2 As Exception
+                    Debug.Print("WARN sheet.TitleBlock=name: " & ex2.Message)
+                End Try
             End If
             _app.SilentOperation = False
 
