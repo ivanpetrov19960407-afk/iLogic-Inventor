@@ -20,29 +20,57 @@ Imports System.Collections.Generic
 '  ТОЧКА ВХОДА
 ' ================================================================
 Sub Main()
-    ' Пути: сначала читаем кастомные свойства документа (если заданы),
-    ' иначе спрашиваем через InputBox
-    Dim excelPath As String     = String.Empty
+    ' ── 1. Читаем сохранённые пути из кастомных свойств документа ──
+    Dim excelPath     As String = String.Empty
     Dim workspacePath As String = String.Empty
-    Dim sheetTabName As String  = "ALBUM"
+    Dim sheetTabName  As String = "ALBUM"
 
     Try : excelPath     = iProperties.Value("Custom", "AlbumExcel")     : Catch : End Try
     Try : workspacePath = iProperties.Value("Custom", "AlbumWorkspace") : Catch : End Try
     Try : sheetTabName  = iProperties.Value("Custom", "AlbumSheet")     : Catch : End Try
 
-    ' Fallback: запрос пути через InputBox если свойство не задано
+    ' ── 2. Диалог настроек — показываем всегда, подставляем текущие значения ──
+    Dim newExcel As String = InputBox(
+        "Путь к Excel-файлу альбома (.xlsx):" & vbCrLf &
+        "(оставьте как есть или введите новый)",
+        "Шаг 1 из 3 — Excel",
+        excelPath)
+    If newExcel Is Nothing Then Return          ' нажали Отмена
+    If Not String.IsNullOrWhiteSpace(newExcel) Then excelPath = newExcel.Trim()
     If String.IsNullOrWhiteSpace(excelPath) Then
-        excelPath = InputBox("Укажите полный путь к Excel-файлу альбома (.xlsx):", "Путь к Excel", "")
-        If String.IsNullOrWhiteSpace(excelPath) Then Return
+        System.Windows.Forms.MessageBox.Show("Путь к Excel не указан. Отмена.", "Ошибка")
+        Return
     End If
 
+    ' Дефолт папки — рядом с Excel
     If String.IsNullOrWhiteSpace(workspacePath) Then
         workspacePath = System.IO.Path.GetDirectoryName(excelPath)
     End If
 
+    Dim newWorkspace As String = InputBox(
+        "Папка с 3D-моделями (.ipt):" & vbCrLf &
+        "(оставьте как есть или введите новый путь)",
+        "Шаг 2 из 3 — Папка моделей",
+        workspacePath)
+    If newWorkspace Is Nothing Then Return
+    If Not String.IsNullOrWhiteSpace(newWorkspace) Then workspacePath = newWorkspace.Trim()
+
+    Dim newSheet As String = InputBox(
+        "Имя листа в Excel с данными альбома:",
+        "Шаг 3 из 3 — Лист Excel",
+        sheetTabName)
+    If newSheet Is Nothing Then Return
+    If Not String.IsNullOrWhiteSpace(newSheet) Then sheetTabName = newSheet.Trim()
+
+    ' ── 3. Сохраняем пути обратно в свойства документа (на следующий запуск) ──
+    Try : iProperties.Value("Custom", "AlbumExcel")     = excelPath     : Catch : End Try
+    Try : iProperties.Value("Custom", "AlbumWorkspace") = workspacePath : Catch : End Try
+    Try : iProperties.Value("Custom", "AlbumSheet")     = sheetTabName  : Catch : End Try
+
+    ' ── 4. Запуск ──
     Dim doc As DrawingDocument = TryCast(ThisApplication.ActiveDocument, DrawingDocument)
     If doc Is Nothing Then
-        System.Windows.Forms.MessageBox.Show("Откройте .idw документ перед запуском правила.", "Ошибка", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error)
+        System.Windows.Forms.MessageBox.Show("Откройте .idw документ перед запуском правила.", "Ошибка")
         Return
     End If
 
