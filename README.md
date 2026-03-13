@@ -12,3 +12,7 @@ Migration workspace for moving legacy VBA Inventor automation into a modular C# 
   - `IOrderProcessor`
   - `IDrawingAutomator`
   - `ISheetStylingService`
+## Prompt template for Codex (RU)
+
+- `docs/Prompt-iLogic-Album-RU.md` — готовый структурированный промт для генерации iLogic-скрипта из модулей `legacy_vba/`.
+
