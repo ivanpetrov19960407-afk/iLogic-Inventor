@@ -1,8 +1,10 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.10
+' StoneAlbumRule.ilogic.vb  –  v3.11
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.11: fix PlaceViewInSlot — remove shrink loop, views now fill slots
+'        (ViewFitsSlot always returned False due to annotation bounding box)
 ' v3.10: don't re-edit existing border/titleblock defs (fixes text overflow),
 '        smart view-slot matching (permutation-based best fit),
 '        dim notes via DrawingNotes (real mm from view scale)
@@ -545,58 +547,35 @@ Public Class AlbumBuilder
         Return best
     End Function
 
-    ' Размещает вид в центр слота, уменьшает масштаб если не влезает
+    ' Размещает вид в центр слота с заданным масштабом (без shrink-цикла)
     Private Function PlaceViewInSlot(sheet As Sheet, modelDoc As Document,
                                      m As ViewMeasure, scaleVal As Double,
                                      slot As SlotRect) As DrawingView
         If m Is Nothing Then Return Nothing
-        Dim cx As Double = (slot.L + slot.R) / 2
-        Dim cy As Double = (slot.B + slot.T) / 2
-        Dim sc As Double = scaleVal
-        Dim slotW As Double = slot.R - slot.L
-        Dim slotH As Double = slot.T - slot.B
-
-        ' Вид создаётся сразу в центре слота (cx, cy)
-        ' Пробуем с уменьшением масштаба (как VBA: sc * 0.97 в цикле)
-        Do While sc >= 0.02
-            Dim v As DrawingView = Nothing
+        Dim cx As Double = (slot.L + slot.R) / 2.0
+        Dim cy As Double = (slot.B + slot.T) / 2.0
+        Dim v As DrawingView = Nothing
+        Try
+            v = sheet.DrawingViews.AddBaseView(
+                modelDoc,
+                _app.TransientGeometry.CreatePoint2d(cx, cy),
+                scaleVal, m.Orient, m.Style)
+            If v Is Nothing Then Return Nothing
             Try
-                v = sheet.DrawingViews.AddBaseView(
-                    modelDoc,
-                    _app.TransientGeometry.CreatePoint2d(cx, cy),
-                    sc, m.Orient, m.Style)
-                If v Is Nothing Then
-                    sc = sc * 0.97
-                    Continue Do
-                End If
-                Try
-                    v.ShowLabel = False
-                Catch
-                End Try
-                _app.ActiveDocument.Update2(True)
-                ' Проверяем вписание через Left/Top (как VBA DoesViewFitRect)
-                If ViewFitsSlot(v, slot) Then
-                    Debug.Print("Вид OK sc=" & sc & " Left=" & v.Left & " Top=" & v.Top & " W=" & v.Width & " H=" & v.Height)
-                    Return v
-                End If
-                Debug.Print("Вид не впис. sc=" & sc & " Left=" & v.Left & " Top=" & v.Top & " W=" & v.Width & " H=" & v.Height & " slot L=" & slot.L & " R=" & slot.R & " B=" & slot.B & " T=" & slot.T)
-                ' Не вписался — удаляем, уменьшаем масштаб
+                v.ShowLabel = False
+            Catch
+            End Try
+            Return v
+        Catch ex As Exception
+            Debug.Print("WARN PlaceViewInSlot sc=" & scaleVal & ": " & ex.Message)
+            If v IsNot Nothing Then
                 Try
                     v.Delete()
                 Catch
                 End Try
-            Catch ex As Exception
-                Debug.Print("WARN PlaceViewInSlot sc=" & sc & ": " & ex.Message)
-                If v IsNot Nothing Then
-                    Try
-                        v.Delete()
-                    Catch
-                    End Try
-                End If
-            End Try
-            sc = sc * 0.97
-        Loop
-        Return Nothing
+            End If
+            Return Nothing
+        End Try
     End Function
 
     ' Проверяет вписание вида в слот через Left/Top (VBA-стиль)
