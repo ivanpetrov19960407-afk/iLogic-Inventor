@@ -15,7 +15,6 @@ Imports Inventor
 Imports System
 Imports System.Collections.Generic
 Imports System.IO
-Imports System.Text.RegularExpressions
 
 ' ================================================================
 '  ТОЧКА ВХОДА
@@ -41,7 +40,7 @@ Sub Main()
 
     Dim doc As DrawingDocument = TryCast(ThisApplication.ActiveDocument, DrawingDocument)
     If doc Is Nothing Then
-        MessageBox.Show("Откройте .idw документ перед запуском правила.", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        System.Windows.Forms.MessageBox.Show("Откройте .idw документ перед запуском правила.", "Ошибка", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error)
         Return
     End If
 
@@ -100,7 +99,7 @@ Public Class StoneAlbumRule
 
         Dim items As List(Of AlbumItem) = ExcelLoader.Load(excelPath, workspacePath, sheetTabName)
         If items.Count = 0 Then
-            MessageBox.Show("Excel не содержит строк с MODEL_PATH.", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            System.Windows.Forms.MessageBox.Show("Excel не содержит строк с MODEL_PATH.", "Ошибка", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning)
             Return
         End If
 
@@ -119,10 +118,10 @@ Public Class StoneAlbumRule
             For i As Integer = 0 To items.Count - 1
                 Dim item As AlbumItem = items(i)
                 ' Дополняем авто-номерацию листов если не задана
-                If String.IsNullOrWhiteSpace(item.Prompts.GetValueOrDefault("SHEET")) Then
+                If String.IsNullOrWhiteSpace((If(item.Prompts.ContainsKey("SHEET"), item.Prompts("SHEET"), String.Empty))) Then
                     item.Prompts("SHEET") = (i + 1).ToString()
                 End If
-                If String.IsNullOrWhiteSpace(item.Prompts.GetValueOrDefault("SHEETS")) Then
+                If String.IsNullOrWhiteSpace((If(item.Prompts.ContainsKey("SHEETS"), item.Prompts("SHEETS"), String.Empty))) Then
                     item.Prompts("SHEETS") = items.Count.ToString()
                 End If
                 BuildSingleSheet(doc, item, borderDef, titleDef)
@@ -137,7 +136,7 @@ Public Class StoneAlbumRule
             _app.SilentOperation = False
         End Try
 
-        MessageBox.Show("Альбом собран: " & items.Count & " листов.", "Готово", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        System.Windows.Forms.MessageBox.Show("Альбом собран: " & items.Count & " листов.", "Готово", System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Information)
     End Sub
 
     ' ================================================================
@@ -186,7 +185,10 @@ Public Class StoneAlbumRule
             Logger.Error("Лист не собран для " & item.ModelPath & ": " & ex.Message)
         Finally
             If modelDoc IsNot Nothing Then
-                Try : modelDoc.Close(True) : Catch : End Try
+                Try
+                    modelDoc.Close(True)
+                Catch
+                End Try
             End If
         End Try
     End Sub
@@ -208,7 +210,10 @@ Public Class StoneAlbumRule
         Next
 
         For Each s As Sheet In toDelete
-            Try : s.Delete() : Catch : End Try
+            Try
+                s.Delete()
+            Catch
+            End Try
         Next
     End Sub
 
@@ -424,7 +429,10 @@ Public Class StoneAlbumRule
 
     Private Sub SafeDelete(view As DrawingView)
         If view IsNot Nothing Then
-            Try : view.Delete() : Catch : End Try
+            Try
+                view.Delete()
+            Catch
+            End Try
         End If
     End Sub
 
@@ -545,7 +553,10 @@ Public Class StoneAlbumRule
     ' ================================================================
     Private Function EnsureBorderDefinition(doc As DrawingDocument) As BorderDefinition
         Dim def As BorderDefinition = Nothing
-        Try : def = doc.BorderDefinitions.Item(BORDER_NAME) : Catch : End Try
+        Try
+            def = doc.BorderDefinitions.Item(BORDER_NAME)
+        Catch
+        End Try
 
         If def Is Nothing Then
             _app.SilentOperation = True
@@ -590,7 +601,10 @@ Public Class StoneAlbumRule
     ' ================================================================
     Private Function EnsureTitleBlockDefinition(doc As DrawingDocument) As TitleBlockDefinition
         Dim def As TitleBlockDefinition = Nothing
-        Try : def = doc.TitleBlockDefinitions.Item(TITLEBLOCK_NAME) : Catch : End Try
+        Try
+            def = doc.TitleBlockDefinitions.Item(TITLEBLOCK_NAME)
+        Catch
+        End Try
 
         If def Is Nothing Then
             _app.SilentOperation = True
@@ -721,7 +735,7 @@ Public Class StoneAlbumRule
                          x0 As Double, y0 As Double,
                          lMm As Double, bMm As Double, rMm As Double, tMm As Double,
                          text As String)
-        Dim tb As TextBox = sk.TextBoxes.AddByRectangle(
+        Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(
             Pt2d(x0 + MmToCm(doc, lMm), y0 + MmToCm(doc, bMm)),
             Pt2d(x0 + MmToCm(doc, rMm), y0 + MmToCm(doc, tMm)),
             text)
@@ -733,7 +747,7 @@ Public Class StoneAlbumRule
                           x0 As Double, y0 As Double,
                           lMm As Double, bMm As Double, rMm As Double, tMm As Double,
                           promptName As String)
-        Dim tb As TextBox = sk.TextBoxes.AddByRectangle(
+        Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(
             Pt2d(x0 + MmToCm(doc, lMm), y0 + MmToCm(doc, bMm)),
             Pt2d(x0 + MmToCm(doc, rMm), y0 + MmToCm(doc, tMm)),
             "<Prompt>" & promptName & "</Prompt>")
@@ -744,14 +758,20 @@ Public Class StoneAlbumRule
     Private Sub ClearSketchLines(sk As DrawingSketch)
         If sk Is Nothing Then Return
         For i As Integer = sk.SketchLines.Count To 1 Step -1
-            Try : sk.SketchLines.Item(i).Delete() : Catch : End Try
+            Try
+                sk.SketchLines.Item(i).Delete()
+            Catch
+            End Try
         Next
     End Sub
 
     Private Sub ClearSketchFull(sk As DrawingSketch)
         If sk Is Nothing Then Return
         For i As Integer = sk.TextBoxes.Count To 1 Step -1
-            Try : sk.TextBoxes.Item(i).Delete() : Catch : End Try
+            Try
+                sk.TextBoxes.Item(i).Delete()
+            Catch
+            End Try
         Next
         ClearSketchLines(sk)
     End Sub
@@ -775,7 +795,10 @@ Public Class StoneAlbumRule
     Private Sub RemoveAllViews(sheet As Sheet)
         If sheet Is Nothing Then Return
         For i As Integer = sheet.DrawingViews.Count To 1 Step -1
-            Try : sheet.DrawingViews.Item(i).Delete() : Catch : End Try
+            Try
+                sheet.DrawingViews.Item(i).Delete()
+            Catch
+            End Try
         Next
     End Sub
 
@@ -892,8 +915,14 @@ Public NotInheritable Class ExcelLoader
         Catch ex As Exception
             Debug.Print("ERROR: Excel load failed: " & ex.Message)
         Finally
-            Try : If xlBook IsNot Nothing Then xlBook.Close(False) : Catch : End Try
-            Try : If xlApp  IsNot Nothing Then xlApp.Quit()        : Catch : End Try
+            Try
+                If xlBook IsNot Nothing Then xlBook.Close(False)
+            Catch
+            End Try
+            Try
+                If xlApp  IsNot Nothing Then xlApp.Quit()
+            Catch
+            End Try
         End Try
 
         Return result
