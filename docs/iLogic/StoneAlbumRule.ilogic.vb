@@ -1,11 +1,11 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.15
+' StoneAlbumRule.ilogic.vb  –  v3.16
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
-' v3.15: prefer informative profile side using Front/Back and Left/Right comparison,
-'        enable captions and dimensions for views,
-'        prefer profile-like auxiliary view in left slot and longitudinal/simple auxiliary view in right slot
+' v3.16: sample-like standard layout: left profile + right longitudinal + large iso,
+'        captions enabled for views, dimensions only on small 2D views (not on iso),
+'        prefer informative front/profile side for steps and profiled parts
 ' v3.14: smart auxiliary view selection from Front/Top/Right,
 '        disable view notes by default, remove shrink loop from PlaceViewInSlot
 ' v3.13: restore border re-edit (removed early return in EnsureBorder),
@@ -147,6 +147,7 @@ Public Class AlbumBuilder
     Private Const ALBUM_MODE_VISUAL As Boolean = True
     Private Const ADD_VIEW_NOTES As Boolean = True
     Private Const ADD_VIEW_DIMENSIONS As Boolean = True
+    Private Const DIMENSIONS_ON_MAIN_ISO As Boolean = False
     Private Const VIEW_CAPTION_GAP_MM As Double = 5.0
     Private Const VIEW_DIM_MIN_MM As Double = 10.0
 
@@ -426,7 +427,7 @@ Public Class AlbumBuilder
 
         Dim preferredFrontBack As ViewMeasure = PickPreferredOppositeView(mFront, mBack)
         Dim preferredLeftRight As ViewMeasure = PickPreferredOppositeView(mLeft, mRight)
-        Dim auxMeasures As List(Of ViewMeasure) = BuildPreferredAuxMeasures(preferredFrontBack, Nothing, mTop, preferredLeftRight, Nothing)
+        Dim auxMeasures As List(Of ViewMeasure) = BuildPreferredAuxMeasures(mFront, mBack, mTop, mLeft, mRight)
 
         If auxMeasures.Count < 2 Then
             Debug.Print("WARN: не удалось измерить два вспомогательных вида")
@@ -441,6 +442,17 @@ Public Class AlbumBuilder
             For Each pair As AuxPair In pairs
                 Dim candidate As LayoutPlan = EvaluatePlanFlexible(ptn, mIso, pair.A, pair.B)
                 If candidate Is Nothing Then Continue For
+
+                If preferredFrontBack IsNot Nothing Then
+                    If candidate.Aux1Measure Is preferredFrontBack OrElse candidate.Aux2Measure Is preferredFrontBack Then
+                        candidate.Score += 0.02
+                    End If
+                End If
+                If preferredLeftRight IsNot Nothing Then
+                    If candidate.Aux1Measure Is preferredLeftRight OrElse candidate.Aux2Measure Is preferredLeftRight Then
+                        candidate.Score += 0.02
+                    End If
+                End If
 
                 If best Is Nothing OrElse candidate.Score > best.Score Then
                     best = candidate
@@ -627,20 +639,29 @@ Public Class AlbumBuilder
             Dim aux1Top As Boolean = String.Equals(a1.Key, "TOP", StringComparison.OrdinalIgnoreCase)
             Dim aux2Top As Boolean = String.Equals(a2.Key, "TOP", StringComparison.OrdinalIgnoreCase)
 
-            If aux1Profile AndAlso (Not aux2Profile OrElse a1.CurveCount >= a2.CurveCount) Then
-                plan.Score += 0.1
-            End If
+            If aux1Profile Then plan.Score += 0.12
+            If aux2Long Then plan.Score += 0.1
 
-            If aux2Long AndAlso (Not aux1Long OrElse a2.AspectRatio >= a1.AspectRatio) Then
-                plan.Score += 0.08
-            End If
-
-            If (aux1Top AndAlso Not aux2Top) OrElse (aux2Top AndAlso Not aux1Top) Then
-                plan.Score += 0.08
-            End If
+            Dim mixedPair As Boolean = False
+            If aux1Profile AndAlso (aux2Long OrElse aux2Top) Then mixedPair = True
+            If aux2Profile AndAlso (aux1Long OrElse aux1Top) Then mixedPair = True
+            If mixedPair Then plan.Score += 0.08
 
             If aux1Long AndAlso aux2Long AndAlso (Not aux1Profile) AndAlso (Not aux2Profile) Then
-                plan.Score -= 0.06
+                plan.Score -= 0.08
+            End If
+
+            If (aux1Top AndAlso aux2Top) Then
+                plan.Score -= 0.03
+            End If
+
+            Dim similarMeaning As Boolean = False
+            If aux1Profile AndAlso aux2Profile Then similarMeaning = True
+            If aux1Long AndAlso aux2Long Then similarMeaning = True
+            If similarMeaning Then plan.Score -= 0.04
+
+            If Math.Abs(a1.AspectRatio - a2.AspectRatio) < 0.35 AndAlso (Not mixedPair) Then
+                plan.Score -= 0.02
             End If
 
             If best Is Nothing OrElse plan.Score > best.Score Then
@@ -700,7 +721,7 @@ Public Class AlbumBuilder
         If v Is Nothing Then Return
 
         Dim caption As String = "Изометрия"
-        If Not isMain AndAlso measure IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(measure.Caption) Then
+        If measure IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(measure.Caption) Then
             caption = measure.Caption
         End If
 
@@ -718,12 +739,13 @@ Public Class AlbumBuilder
             Debug.Print("WARN AddViewAnnotations caption: " & ex.Message)
         End Try
 
-        If isMain OrElse (Not ADD_VIEW_DIMENSIONS) Then Return
+        If Not ADD_VIEW_DIMENSIONS Then Return
+        If isMain AndAlso (Not DIMENSIONS_ON_MAIN_ISO) Then Return
 
         Dim added As Integer = 0
         added += TryAddTrueDimensions(doc, sheet, v, slot, True, True)
         If added < 2 Then
-            AddFallbackDimensionNotes(doc, sheet, v, slot, True, True)
+            AddFallbackDimensionNotes(doc, sheet, v, slot, True, True, measure)
         End If
     End Sub
 
@@ -786,17 +808,28 @@ Public Class AlbumBuilder
     Private Sub AddFallbackDimensionNotes(doc As DrawingDocument, sheet As Sheet,
                                           v As DrawingView, slot As SlotRect,
                                           addHorizontal As Boolean,
-                                          addVertical As Boolean)
+                                          addVertical As Boolean,
+                                          measure As ViewMeasure)
         Try
             Dim sc As Double = v.Scale
             If sc <= 0.0001 Then Return
 
             Dim realWmm As Double = Math.Round(v.Width / sc * 10.0)
             Dim realHmm As Double = Math.Round(v.Height / sc * 10.0)
+            Dim isProfile As Boolean = IsProfileLikeMeasure(measure)
+            Dim isLong As Boolean = IsLongitudinalMeasure(measure)
 
             If addHorizontal AndAlso realWmm >= VIEW_DIM_MIN_MM Then
                 Dim px As Double = Math.Max(slot.L + Cm(doc, 3.0), Math.Min(slot.R - Cm(doc, 3.0), v.Left + v.Width / 2.0))
-                Dim py As Double = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 1.0), v.Top + Cm(doc, 5.0)))
+                Dim py As Double
+                If isProfile Then
+                    py = Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 4.0))
+                ElseIf isLong Then
+                    py = Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 4.5))
+                Else
+                    py = Math.Min(slot.T - Cm(doc, 1.5), v.Top + Cm(doc, 4.0))
+                End If
+                py = Math.Max(slot.B + Cm(doc, 2.0), py)
                 sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, py),
                                        "↔ " & String.Format("{0:F0} мм", realWmm))
             End If
@@ -810,7 +843,16 @@ Public Class AlbumBuilder
                 Else
                     px2 = Math.Max(slot.L + Cm(doc, 1.0), v.Left - Cm(doc, 2.5))
                 End If
-                Dim py2 As Double = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0))
+
+                Dim py2 As Double
+                If isProfile Then
+                    py2 = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0))
+                ElseIf isLong Then
+                    py2 = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0))
+                Else
+                    py2 = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0))
+                End If
+
                 sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px2, py2),
                                        "↕ " & String.Format("{0:F0} мм", realHmm))
             End If
