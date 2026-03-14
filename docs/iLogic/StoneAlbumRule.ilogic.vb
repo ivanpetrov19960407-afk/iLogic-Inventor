@@ -63,8 +63,9 @@ Sub Main()
         "Путь к Excel-файлу альбома (.xlsx):" & vbCrLf &
         "(оставьте как есть или введите новый)",
         "Шаг 1 из 3 — Excel", excelPath)
-    If newExcel Is Nothing Then Return
-    If Not String.IsNullOrWhiteSpace(newExcel) Then excelPath = newExcel.Trim()
+    If newExcel IsNot Nothing Then
+        If Not String.IsNullOrWhiteSpace(newExcel) Then excelPath = newExcel.Trim()
+    End If
     If String.IsNullOrWhiteSpace(excelPath) Then
         System.Windows.Forms.MessageBox.Show("Путь к Excel не указан.", "Отмена")
         Return
@@ -84,13 +85,19 @@ Sub Main()
     Dim newWs As String = InputBox(
         "Папка с 3D-моделями (.ipt):",
         "Шаг 2 из 3 — Папка моделей", workspacePath)
-    If newWs Is Nothing Then Return
-    If Not String.IsNullOrWhiteSpace(newWs) Then workspacePath = newWs.Trim()
+    If newWs IsNot Nothing Then
+        If Not String.IsNullOrWhiteSpace(newWs) Then workspacePath = newWs.Trim()
+    End If
 
     Dim newSheet As String = InputBox(
         "Имя листа в Excel:", "Шаг 3 из 3 — Лист Excel", sheetTabName)
-    If newSheet Is Nothing Then Return
-    If Not String.IsNullOrWhiteSpace(newSheet) Then sheetTabName = newSheet.Trim()
+    If newSheet IsNot Nothing Then
+        If Not String.IsNullOrWhiteSpace(newSheet) Then sheetTabName = newSheet.Trim()
+    End If
+    If String.IsNullOrWhiteSpace(sheetTabName) Then
+        System.Windows.Forms.MessageBox.Show("Имя листа Excel не указано.", "Отмена")
+        Return
+    End If
 
     Try
         iProperties.Value("Custom", "AlbumExcel") = excelPath
@@ -132,6 +139,7 @@ Public Class AlbumBuilder
     Private Const BORDER_NAME   As String = "RKM_SPDS_A3_BORDER_V12"
     Private Const TB_NAME       As String = "RKM_SPDS_A3_FORM3_V17"
     Private Const SHEET_PFX     As String = "ALB_"
+    Private Const ALBUM_MODE_VISUAL As Boolean = True
 
     ' Параметры layout (точно из VBA RKM_IdwAlbum.bas)
     Private Const GAP_MM              As Double = 8.0
@@ -180,11 +188,21 @@ Public Class AlbumBuilder
 
             For i As Integer = 0 To items.Count - 1
                 Dim item As AlbumItem = items(i)
-                If String.IsNullOrWhiteSpace(item.Prompts("SHEET"))  Then item.Prompts("SHEET")  = (i + 1).ToString()
-                If String.IsNullOrWhiteSpace(item.Prompts("SHEETS")) Then item.Prompts("SHEETS") = items.Count.ToString()
+                Dim promptSheet As String = String.Empty
+                Dim promptSheets As String = String.Empty
+                item.Prompts.TryGetValue("SHEET", promptSheet)
+                item.Prompts.TryGetValue("SHEETS", promptSheets)
 
-                Dim ok As Boolean = BuildOneSheet(doc, item)
-                If ok Then okCount += 1 Else failCount += 1
+                If String.IsNullOrWhiteSpace(promptSheet) Then item.Prompts("SHEET") = (i + 1).ToString()
+                If String.IsNullOrWhiteSpace(promptSheets) Then item.Prompts("SHEETS") = items.Count.ToString()
+
+                Dim ok As Boolean = BuildOneSheet(doc, item, i + 1)
+                If ok Then
+                    okCount += 1
+                Else
+                    failCount += 1
+                    Debug.Print("WARN: лист не собран, строка Excel=" & (i + 1).ToString() & ", модель=" & item.ModelPath)
+                End If
             Next
 
             If tmplSheet IsNot Nothing Then
@@ -208,9 +226,9 @@ Public Class AlbumBuilder
     ' ── Один лист ──
     ' v3.6: borderDef/tbDef получаем заново внутри каждого вызова
     '       (COM RCW протухает после doc.Update2 если ссылка хранится снаружи)
-    Private Function BuildOneSheet(doc As DrawingDocument, item As AlbumItem) As Boolean
+    Private Function BuildOneSheet(doc As DrawingDocument, item As AlbumItem, rowIndex As Integer) As Boolean
         If Not System.IO.File.Exists(item.ModelPath) Then
-            Debug.Print("WARN: модель не найдена: " & item.ModelPath)
+            Debug.Print("WARN: модель не найдена, строка Excel=" & rowIndex.ToString() & ", путь=" & item.ModelPath)
             Return False
         End If
 
@@ -327,13 +345,13 @@ Public Class AlbumBuilder
                     modelDoc = _app.Documents.Open(item.ModelPath, False)
                     openedHere = (modelDoc IsNot Nothing)
                 Catch ex As Exception
-                    Debug.Print("WARN Open: " & ex.Message)
+                    Debug.Print("WARN Open, строка Excel=" & rowIndex.ToString() & ", модель=" & item.ModelPath & ": " & ex.Message)
                 Finally
                     _app.SilentOperation = False
                 End Try
             End If
             If modelDoc Is Nothing Then
-                Debug.Print("WARN: не удалось открыть: " & item.ModelPath)
+                Debug.Print("WARN: не удалось открыть, строка Excel=" & rowIndex.ToString() & ", модель=" & item.ModelPath)
                 Try
                     sheet.Delete()
                 Catch
@@ -343,6 +361,9 @@ Public Class AlbumBuilder
 
             ' Виды через slot-based layout
             Dim viewsOk As Boolean = PlaceViewsSlotBased(doc, sheet, modelDoc)
+            If Not viewsOk Then
+                Debug.Print("WARN: не удалось построить виды, строка Excel=" & rowIndex.ToString() & ", лист=" & sheetName)
+            End If
             doc.Update2(True)
 
             If sheet.DrawingViews.Count < 3 Then
@@ -357,7 +378,7 @@ Public Class AlbumBuilder
             Return True
 
         Catch ex As Exception
-            Debug.Print("ERROR: BuildOneSheet: " & ex.Message)
+            Debug.Print("ERROR: BuildOneSheet, строка Excel=" & rowIndex.ToString() & ", модель=" & item.ModelPath & ": " & ex.Message)
             If sheet IsNot Nothing Then
                 Try
                     sheet.Delete()
@@ -381,42 +402,39 @@ Public Class AlbumBuilder
     Private Function PlaceViewsSlotBased(doc As DrawingDocument, sheet As Sheet, modelDoc As Document) As Boolean
         Dim safe As SlotRect = GetSheetSafeRect(doc, sheet)
         Dim gap As Double = Cm(doc, GAP_MM)
+
         Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mTop As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle)
 
-        If mFront Is Nothing OrElse mTop Is Nothing OrElse mRight Is Nothing Then
-            Debug.Print("WARN: не удалось измерить базовые виды")
+        If ALBUM_MODE_VISUAL AndAlso mIso Is Nothing Then
+            Debug.Print("WARN: не удалось измерить изометрический shaded вид")
+            Return False
+        End If
+        If mFront Is Nothing OrElse mTop Is Nothing Then
+            Debug.Print("WARN: не удалось измерить вспомогательные виды Front/Top")
             Return False
         End If
 
-        Dim orthos As List(Of ViewMeasure) = New List(Of ViewMeasure) From {mFront, mTop, mRight}
         Dim patterns As List(Of LayoutPattern) = BuildLayoutPatterns(doc, safe, gap)
         Dim best As LayoutPlan = Nothing
 
         For Each ptn As LayoutPattern In patterns
-            For mainIdx As Integer = 0 To 2
-                Dim aux As List(Of Integer) = New List(Of Integer)()
-                For i As Integer = 0 To 2
-                    If i <> mainIdx Then aux.Add(i)
-                Next
+            Dim candidate As LayoutPlan = EvaluatePlan(ptn, mIso, mFront, mTop, mRight)
+            If candidate Is Nothing Then Continue For
 
-                Dim candidate As LayoutPlan = EvaluatePlan(ptn, orthos(mainIdx), orthos(aux(0)), orthos(aux(1)), mIso)
-                If candidate Is Nothing Then Continue For
+            candidate.MainMeasure = mIso
+            candidate.Aux1Measure = mFront
+            candidate.Aux2Measure = mTop
 
-                candidate.MainMeasure = orthos(mainIdx)
-                candidate.Aux1Measure = orthos(aux(0))
-                candidate.Aux2Measure = orthos(aux(1))
-
-                If best Is Nothing OrElse candidate.Score > best.Score Then
-                    best = candidate
-                End If
-            Next
+            If best Is Nothing OrElse candidate.Score > best.Score Then
+                best = candidate
+            End If
         Next
 
         If best Is Nothing Then
-            Debug.Print("WARN: не найден корректный layout")
+            Debug.Print("WARN: не найден корректный layout визуализации")
             Return False
         End If
 
@@ -427,22 +445,12 @@ Public Class AlbumBuilder
         Dim vAux2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.Aux2Measure, best.Aux2Fit, best.Aux2Slot)
 
         If vAux1 Is Nothing OrElse vAux2 Is Nothing Then
-            Debug.Print("WARN: не удалось разместить все ортогональные виды")
+            Debug.Print("WARN: не удалось разместить все вспомогательные виды")
         End If
 
         AddDimNotes(doc, sheet, vMain, best.MainSlot, True)
         AddDimNotes(doc, sheet, vAux1, best.Aux1Slot, False)
         AddDimNotes(doc, sheet, vAux2, best.Aux2Slot, False)
-
-        If best.IsoFit IsNot Nothing AndAlso best.IsoFit.Scale > 0 AndAlso mIso IsNot Nothing Then
-            Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, mIso, best.IsoFit, best.IsoSlot)
-            If isoV IsNot Nothing Then
-                Try
-                    isoV.ShowLabel = False
-                Catch
-                End Try
-            End If
-        End If
 
         Return True
     End Function
@@ -453,40 +461,31 @@ Public Class AlbumBuilder
         Dim h As Double = RectH(safe)
         If w <= gap * 4 OrElse h <= gap * 4 Then Return result
 
-        Dim topBand As Double = Math.Max(h * 0.24, Cm(doc, 30.0))
-        topBand = Math.Min(topBand, h * 0.34)
-        Dim rightCol As Double = Math.Max(w * 0.25, Cm(doc, 40.0))
-        rightCol = Math.Min(rightCol, w * 0.34)
+        Dim auxBand As Double = Math.Max(h * 0.26, Cm(doc, 34.0))
+        auxBand = Math.Min(auxBand, h * 0.34)
+        Dim auxW As Double = Math.Max((w - gap * 3.0) / 2.0, Cm(doc, 45.0))
 
-        ' Pattern A: главный широкий снизу, два вспомогательных сверху, ISO справа сверху
+        ' Вариант B (низкий риск): большой изометрический вид + 2 маленьких ортогональных сверху.
         Dim pA As New LayoutPattern()
-        pA.MainSlot = New SlotRect(safe.L, safe.R, safe.B, safe.T - topBand - gap)
-        pA.Aux1Slot = New SlotRect(safe.L, safe.L + (w - gap) / 2.0, safe.T - topBand, safe.T)
-        pA.Aux2Slot = New SlotRect(safe.L + (w + gap) / 2.0, safe.R - rightCol - gap, safe.T - topBand, safe.T)
-        pA.IsoSlot = New SlotRect(safe.R - rightCol, safe.R, safe.T - topBand, safe.T)
+        pA.MainSlot = New SlotRect(safe.L, safe.R, safe.B, safe.T - auxBand - gap)
+        pA.Aux1Slot = New SlotRect(safe.L, safe.L + auxW, safe.T - auxBand, safe.T)
+        pA.Aux2Slot = New SlotRect(safe.R - auxW, safe.R, safe.T - auxBand, safe.T)
+        pA.IsoSlot = New SlotRect(0, 0, 0, 0)
         result.Add(pA)
 
-        ' Pattern B: главный слева, вспомогательные справа стопкой, ISO в правом верхнем углу
+        ' Запасной вариант: справа вертикальный столбец с двумя малыми видами.
+        Dim sideCol As Double = Math.Min(Math.Max(w * 0.26, Cm(doc, 45.0)), w * 0.34)
         Dim pB As New LayoutPattern()
-        pB.MainSlot = New SlotRect(safe.L, safe.R - rightCol - gap, safe.B, safe.T)
-        pB.Aux1Slot = New SlotRect(safe.R - rightCol, safe.R, safe.B + (h + gap) / 2.0, safe.T - topBand * 0.15)
-        pB.Aux2Slot = New SlotRect(safe.R - rightCol, safe.R, safe.B, safe.B + (h - gap) / 2.0)
-        pB.IsoSlot = New SlotRect(safe.R - rightCol, safe.R, safe.T - topBand, safe.T)
+        pB.MainSlot = New SlotRect(safe.L, safe.R - sideCol - gap, safe.B, safe.T)
+        pB.Aux1Slot = New SlotRect(safe.R - sideCol, safe.R, safe.B + (h + gap) / 2.0, safe.T)
+        pB.Aux2Slot = New SlotRect(safe.R - sideCol, safe.R, safe.B, safe.B + (h - gap) / 2.0)
+        pB.IsoSlot = New SlotRect(0, 0, 0, 0)
         result.Add(pB)
-
-        ' Pattern C: главный справа, вспомогательные слева стопкой
-        Dim pC As New LayoutPattern()
-        pC.MainSlot = New SlotRect(safe.L + rightCol + gap, safe.R, safe.B, safe.T)
-        pC.Aux1Slot = New SlotRect(safe.L, safe.L + rightCol, safe.B + (h + gap) / 2.0, safe.T - topBand * 0.15)
-        pC.Aux2Slot = New SlotRect(safe.L, safe.L + rightCol, safe.B, safe.B + (h - gap) / 2.0)
-        pC.IsoSlot = New SlotRect(safe.L, safe.L + rightCol, safe.T - topBand, safe.T)
-        result.Add(pC)
 
         For Each p As LayoutPattern In result
             p.MainSlot = InsetRect(p.MainSlot, gap * 0.25)
             p.Aux1Slot = InsetRect(p.Aux1Slot, gap * 0.25)
             p.Aux2Slot = InsetRect(p.Aux2Slot, gap * 0.25)
-            p.IsoSlot = InsetRect(p.IsoSlot, gap * 0.2)
         Next
         Return result
     End Function
@@ -502,10 +501,10 @@ Public Class AlbumBuilder
         plan.Aux2Slot = ptn.Aux2Slot
         plan.IsoSlot = ptn.IsoSlot
 
-        plan.MainFit = ScaleToFit(plan.MainSlot, mainM, ORTHO_SCALE_MARGIN)
+        plan.MainFit = ScaleToFit(plan.MainSlot, mainM, ISO_SCALE_MARGIN)
         plan.Aux1Fit = ScaleToFit(plan.Aux1Slot, aux1M, ORTHO_SCALE_MARGIN)
         plan.Aux2Fit = ScaleToFit(plan.Aux2Slot, aux2M, ORTHO_SCALE_MARGIN)
-        If isoM IsNot Nothing Then plan.IsoFit = ScaleToFit(plan.IsoSlot, isoM, ISO_SCALE_MARGIN)
+        If isoM IsNot Nothing Then plan.IsoFit = ScaleToFit(plan.IsoSlot, isoM, ORTHO_SCALE_MARGIN)
 
         If plan.MainFit Is Nothing OrElse plan.MainFit.Scale <= 0 Then Return Nothing
         If plan.Aux1Fit Is Nothing OrElse plan.Aux1Fit.Scale <= 0 Then Return Nothing
@@ -524,12 +523,12 @@ Public Class AlbumBuilder
                                  RectW(plan.Aux2Slot) * RectH(plan.Aux2Slot)
         If workArea <= 0 Then Return Nothing
 
-        Dim fill As Double = (mainArea + auxArea + isoArea * 0.5) / workArea
+        Dim fill As Double = (mainArea + auxArea + isoArea * 0.2) / workArea
         Dim mainDominance As Double = mainArea / Math.Max(0.0001, (mainArea + auxArea))
         Dim compactness As Double = Math.Min(fill, 0.9)
 
-        plan.Score = compactness * 0.55 + mainDominance * 0.45
-        If mainDominance < 0.45 Then plan.Score -= 0.3
+        plan.Score = compactness * 0.4 + mainDominance * 0.6
+        If mainDominance < 0.55 Then plan.Score -= 0.4
         Return plan
     End Function
 
@@ -540,16 +539,18 @@ Public Class AlbumBuilder
 
         Dim added As Integer = 0
         If isMain Then
-            added += TryAddTrueDimensions(doc, sheet, v, slot, True, True)
-        Else
-            added += TryAddTrueDimensions(doc, sheet, v, slot, True, False)
+            Try
+                Dim px As Double = Math.Max(slot.L + Cm(doc, 3.0), Math.Min(slot.R - Cm(doc, 3.0), v.Left + v.Width / 2.0))
+                Dim py As Double = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0 - Cm(doc, 2.0)))
+                sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, py), "Главный вид (изометрия, shaded)")
+            Catch ex As Exception
+                Debug.Print("WARN AddDimNotes main caption: " & ex.Message)
+            End Try
+            Return
         End If
 
-        If isMain Then
-            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, True)
-        Else
-            If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, False)
-        End If
+        added += TryAddTrueDimensions(doc, sheet, v, slot, True, False)
+        If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, False)
     End Sub
 
     Private Function TryAddTrueDimensions(doc As DrawingDocument, sheet As Sheet,
