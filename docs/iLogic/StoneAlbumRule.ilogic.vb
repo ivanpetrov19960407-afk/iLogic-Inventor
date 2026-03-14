@@ -1,8 +1,10 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.13
+' StoneAlbumRule.ilogic.vb  –  v3.14
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.14: smart auxiliary view selection from Front/Top/Right,
+'        disable view notes by default, remove shrink loop from PlaceViewInSlot
 ' v3.13: restore border re-edit (removed early return in EnsureBorder),
 '        cap view scale at 2.0 (was 100), hide probe labels in MeasureView
 ' v3.12: absolute slot geometry from A3 SPDS frame, no dynamic safeRect
@@ -140,6 +142,7 @@ Public Class AlbumBuilder
     Private Const TB_NAME       As String = "RKM_SPDS_A3_FORM3_V17"
     Private Const SHEET_PFX     As String = "ALB_"
     Private Const ALBUM_MODE_VISUAL As Boolean = True
+    Private Const ADD_VIEW_NOTES As Boolean = False
 
     ' Параметры layout (точно из VBA RKM_IdwAlbum.bas)
     Private Const GAP_MM              As Double = 8.0
@@ -412,25 +415,30 @@ Public Class AlbumBuilder
             Debug.Print("WARN: не удалось измерить изометрический shaded вид")
             Return False
         End If
-        If mFront Is Nothing OrElse mTop Is Nothing Then
-            Debug.Print("WARN: не удалось измерить вспомогательные виды Front/Top")
+
+        Dim auxMeasures As New List(Of ViewMeasure)()
+        If mFront IsNot Nothing Then auxMeasures.Add(mFront)
+        If mTop IsNot Nothing Then auxMeasures.Add(mTop)
+        If mRight IsNot Nothing Then auxMeasures.Add(mRight)
+
+        If auxMeasures.Count < 2 Then
+            Debug.Print("WARN: не удалось измерить два вспомогательных вида")
             Return False
         End If
 
+        Dim pairs As List(Of AuxPair) = BuildAuxPairs(auxMeasures)
         Dim patterns As List(Of LayoutPattern) = BuildLayoutPatterns(doc, safe, gap)
         Dim best As LayoutPlan = Nothing
 
         For Each ptn As LayoutPattern In patterns
-            Dim candidate As LayoutPlan = EvaluatePlan(ptn, mIso, mFront, mTop, mRight)
-            If candidate Is Nothing Then Continue For
+            For Each pair As AuxPair In pairs
+                Dim candidate As LayoutPlan = EvaluatePlanFlexible(ptn, mIso, pair.A, pair.B)
+                If candidate Is Nothing Then Continue For
 
-            candidate.MainMeasure = mIso
-            candidate.Aux1Measure = mFront
-            candidate.Aux2Measure = mTop
-
-            If best Is Nothing OrElse candidate.Score > best.Score Then
-                best = candidate
-            End If
+                If best Is Nothing OrElse candidate.Score > best.Score Then
+                    best = candidate
+                End If
+            Next
         Next
 
         If best Is Nothing Then
@@ -446,11 +454,14 @@ Public Class AlbumBuilder
 
         If vAux1 Is Nothing OrElse vAux2 Is Nothing Then
             Debug.Print("WARN: не удалось разместить все вспомогательные виды")
+            Return False
         End If
 
-        AddDimNotes(doc, sheet, vMain, best.MainSlot, True)
-        AddDimNotes(doc, sheet, vAux1, best.Aux1Slot, False)
-        AddDimNotes(doc, sheet, vAux2, best.Aux2Slot, False)
+        If ADD_VIEW_NOTES Then
+            AddDimNotes(doc, sheet, vMain, best.MainSlot, True)
+            AddDimNotes(doc, sheet, vAux1, best.Aux1Slot, False)
+            AddDimNotes(doc, sheet, vAux2, best.Aux2Slot, False)
+        End If
 
         Return True
     End Function
@@ -488,6 +499,71 @@ Public Class AlbumBuilder
             p.Aux2Slot = InsetRect(p.Aux2Slot, gap * 0.25)
         Next
         Return result
+    End Function
+
+    Private Function BuildAuxPairs(measures As List(Of ViewMeasure)) As List(Of AuxPair)
+        Dim result As New List(Of AuxPair)()
+
+        For i As Integer = 0 To measures.Count - 2
+            For j As Integer = i + 1 To measures.Count - 1
+                result.Add(New AuxPair(measures(i), measures(j)))
+            Next
+        Next
+
+        Return result
+    End Function
+
+    Private Function EvaluatePlanFlexible(ptn As LayoutPattern,
+                                          mainM As ViewMeasure,
+                                          auxA As ViewMeasure,
+                                          auxB As ViewMeasure) As LayoutPlan
+        Dim best As LayoutPlan = Nothing
+
+        For pass As Integer = 0 To 1
+            Dim a1 As ViewMeasure = If(pass = 0, auxA, auxB)
+            Dim a2 As ViewMeasure = If(pass = 0, auxB, auxA)
+
+            Dim plan As New LayoutPlan()
+            plan.MainSlot = ptn.MainSlot
+            plan.Aux1Slot = ptn.Aux1Slot
+            plan.Aux2Slot = ptn.Aux2Slot
+            plan.IsoSlot = ptn.IsoSlot
+
+            plan.MainMeasure = mainM
+            plan.Aux1Measure = a1
+            plan.Aux2Measure = a2
+
+            plan.MainFit = ScaleToFit(plan.MainSlot, mainM, ISO_SCALE_MARGIN)
+            plan.Aux1Fit = ScaleToFit(plan.Aux1Slot, a1, ORTHO_SCALE_MARGIN)
+            plan.Aux2Fit = ScaleToFit(plan.Aux2Slot, a2, ORTHO_SCALE_MARGIN)
+
+            If plan.MainFit Is Nothing OrElse plan.MainFit.Scale <= 0 Then Continue For
+            If plan.Aux1Fit Is Nothing OrElse plan.Aux1Fit.Scale <= 0 Then Continue For
+            If plan.Aux2Fit Is Nothing OrElse plan.Aux2Fit.Scale <= 0 Then Continue For
+
+            Dim mainArea As Double = plan.MainFit.ProjectedW * plan.MainFit.ProjectedH
+            Dim aux1Area As Double = plan.Aux1Fit.ProjectedW * plan.Aux1Fit.ProjectedH
+            Dim aux2Area As Double = plan.Aux2Fit.ProjectedW * plan.Aux2Fit.ProjectedH
+            Dim auxArea As Double = aux1Area + aux2Area
+
+            Dim workArea As Double = RectW(plan.MainSlot) * RectH(plan.MainSlot) +
+                                     RectW(plan.Aux1Slot) * RectH(plan.Aux1Slot) +
+                                     RectW(plan.Aux2Slot) * RectH(plan.Aux2Slot)
+            If workArea <= 0 Then Continue For
+
+            Dim fill As Double = (mainArea + auxArea) / workArea
+            Dim mainDominance As Double = mainArea / Math.Max(0.0001, mainArea + auxArea)
+            Dim auxBalance As Double = Math.Min(aux1Area, aux2Area) / Math.Max(0.0001, Math.Max(aux1Area, aux2Area))
+
+            plan.Score = fill * 0.35 + mainDominance * 0.45 + auxBalance * 0.2
+            If mainDominance < 0.45 Then plan.Score -= 0.3
+
+            If best Is Nothing OrElse plan.Score > best.Score Then
+                best = plan
+            End If
+        Next
+
+        Return best
     End Function
 
     Private Function EvaluatePlan(ptn As LayoutPattern,
@@ -723,8 +799,8 @@ Public Class AlbumBuilder
     End Function
 
     Private Function PlaceViewInSlot(sheet As Sheet, modelDoc As Document,
-                                     m As ViewMeasure, fit As FitResult,
-                                     slot As SlotRect) As DrawingView
+                                 m As ViewMeasure, fit As FitResult,
+                                 slot As SlotRect) As DrawingView
         If m Is Nothing OrElse fit Is Nothing Then Return Nothing
         Dim cx As Double = (slot.L + slot.R) / 2.0
         Dim cy As Double = (slot.B + slot.T) / 2.0
@@ -753,18 +829,10 @@ Public Class AlbumBuilder
             Dim dd As DrawingDocument = TryCast(sheet.Parent, DrawingDocument)
             If dd IsNot Nothing Then dd.Update2(True)
 
-            Dim iterations As Integer = 0
-            While Not ViewFitsSlot(v, slot) AndAlso iterations < 12
-                iterations += 1
-                Dim nextScale As Double = v.Scale * 0.92
-                If nextScale < 0.02 Then Exit While
-                v.Scale = nextScale
-                If dd IsNot Nothing Then dd.Update2(True)
-            End While
-
             If Not ViewFitsSlot(v, slot) Then
-                Debug.Print("WARN: view still not fitting slot")
+                Debug.Print("WARN: view does not fully fit slot after placement")
             End If
+
             Return v
 
         Catch ex As Exception
@@ -1035,6 +1103,16 @@ Public Class AlbumBuilder
         Public UnitH  As Double
         Public Orient As ViewOrientationTypeEnum
         Public Style  As DrawingViewStyleEnum
+    End Class
+
+    Public Class AuxPair
+        Public A As ViewMeasure
+        Public B As ViewMeasure
+
+        Public Sub New(a As ViewMeasure, b As ViewMeasure)
+            Me.A = a
+            Me.B = b
+        End Sub
     End Class
 
     Public Class FitResult
