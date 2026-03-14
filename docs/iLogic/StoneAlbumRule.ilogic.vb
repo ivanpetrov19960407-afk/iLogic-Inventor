@@ -376,138 +376,274 @@ Public Class AlbumBuilder
     End Function
 
     ' ================================================================
-    '  SLOT-BASED LAYOUT  (точный порт GetTechSlotRects / PlaceTechViewLayout)
+    '  ADAPTIVE TECH LAYOUT
     ' ================================================================
     Private Function PlaceViewsSlotBased(doc As DrawingDocument, sheet As Sheet, modelDoc As Document) As Boolean
-        ' Абсолютные границы рабочей зоны А3 СПДС (в см)
-        Dim workL As Double = Cm(doc, 20.0)    ' левый отступ рамки СПДС
-        Dim workR As Double = Cm(doc, 415.0)   ' правый край (420-5)
-        Dim workB As Double = Cm(doc, 65.0)    ' над штампом (55мм) + зазор
-        Dim workT As Double = Cm(doc, 292.0)   ' верхний край (297-5)
-        Dim workW As Double = workR - workL
-        Dim workH As Double = workT - workB
-        Dim gap   As Double = Cm(doc, 5.0)
-        ' Разделители пропорционально рабочей зоне (из образца)
-        Dim splitY  As Double = workB + workH * 0.70
-        Dim splitX  As Double = workL + workW * 0.66
-        Dim smallRt As Double = workL + (splitX - workL) * 0.38
-        ' 4 слота
-        Dim slotSmall As SlotRect = New SlotRect(workL,        smallRt - gap, splitY + gap, workT)
-        Dim slotWide  As SlotRect = New SlotRect(smallRt + gap, workR,        splitY + gap, workT)
-        Dim slotLarge As SlotRect = New SlotRect(workL,        splitX - gap,  workB,        splitY - gap)
-        Dim slotIso   As SlotRect = New SlotRect(splitX + gap,  workR,        workB,        splitY - gap)
-        ' Паддинг контента
-        Dim cPad As Double = Cm(doc, 2.0)
-        Dim csSmall As SlotRect = New SlotRect(slotSmall.L + cPad, slotSmall.R - cPad, slotSmall.B + cPad, slotSmall.T - cPad)
-        Dim csWide  As SlotRect = New SlotRect(slotWide.L  + cPad, slotWide.R  - cPad, slotWide.B  + cPad, slotWide.T  - cPad)
-        Dim csLarge As SlotRect = New SlotRect(slotLarge.L + cPad, slotLarge.R - cPad, slotLarge.B + cPad, slotLarge.T - cPad)
-        Dim csIso   As SlotRect = New SlotRect(slotIso.L   + cPad, slotIso.R   - cPad, slotIso.B   + cPad, slotIso.T   - cPad)
-
-        ' 4. Измеряем 4 ориентации через probe-виды
+        Dim safe As SlotRect = GetSheetSafeRect(doc, sheet)
+        Dim gap As Double = Cm(doc, GAP_MM)
         Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-        Dim mTop   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation,   DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
+        Dim mTop As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
         Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-        Dim mIso   As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle)
+        Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle)
 
         If mFront Is Nothing OrElse mTop Is Nothing OrElse mRight Is Nothing Then
-            Debug.Print("WARN: не удалось измерить виды")
+            Debug.Print("WARN: не удалось измерить базовые виды")
             Return False
         End If
 
-        ' 5. v3.10: Умный матчинг видов → слотам (перебор 6 перестановок)
-        Dim measures() As ViewMeasure = {mFront, mTop, mRight}
-        Dim slots() As SlotRect = {csLarge, csSmall, csWide}
-        Dim perms()() As Integer = {
-            New Integer(){0,1,2}, New Integer(){0,2,1},
-            New Integer(){1,0,2}, New Integer(){1,2,0},
-            New Integer(){2,0,1}, New Integer(){2,1,0}
-        }
-        Dim bestPerm() As Integer = perms(0)
-        Dim bestScore As Double = -1
-        For Each perm As Integer() In perms
-            Dim score As Double = 0
-            Dim valid As Boolean = True
-            For i As Integer = 0 To 2
-                Dim sc As Double = ScaleToFit(slots(i), measures(perm(i)), ORTHO_SCALE_MARGIN)
-                If sc <= 0 Then
-                    valid = False
-                    Exit For
+        Dim orthos As List(Of ViewMeasure) = New List(Of ViewMeasure) From {mFront, mTop, mRight}
+        Dim patterns As List(Of LayoutPattern) = BuildLayoutPatterns(doc, safe, gap)
+        Dim best As LayoutPlan = Nothing
+
+        For Each ptn As LayoutPattern In patterns
+            For mainIdx As Integer = 0 To 2
+                Dim aux As List(Of Integer) = New List(Of Integer)()
+                For i As Integer = 0 To 2
+                    If i <> mainIdx Then aux.Add(i)
+                Next
+
+                Dim candidate As LayoutPlan = EvaluatePlan(ptn, orthos(mainIdx), orthos(aux(0)), orthos(aux(1)), mIso)
+                If candidate Is Nothing Then Continue For
+
+                candidate.MainMeasure = orthos(mainIdx)
+                candidate.Aux1Measure = orthos(aux(0))
+                candidate.Aux2Measure = orthos(aux(1))
+
+                If best Is Nothing OrElse candidate.Score > best.Score Then
+                    best = candidate
                 End If
-                score += sc
             Next
-            If valid AndAlso score > bestScore Then
-                bestScore = score
-                bestPerm = perm
-            End If
         Next
 
-        Dim largeScale As Double = ScaleToFit(csLarge, measures(bestPerm(0)), ORTHO_SCALE_MARGIN)
-        Dim smallScale As Double = ScaleToFit(csSmall, measures(bestPerm(1)), ORTHO_SCALE_MARGIN)
-        Dim wideScale  As Double = ScaleToFit(csWide,  measures(bestPerm(2)), ORTHO_SCALE_MARGIN)
-        Dim isoScale   As Double = 0
-
-        If largeScale <= 0 OrElse smallScale <= 0 OrElse wideScale <= 0 Then
-            Debug.Print("WARN: не удалось подобрать масштаб")
+        If best Is Nothing Then
+            Debug.Print("WARN: не найден корректный layout")
             Return False
         End If
 
-        If mIso IsNot Nothing Then
-            isoScale = ScaleToFit(csIso, mIso, ISO_SCALE_MARGIN)
-        End If
-        Debug.Print("Scales: LARGE=" & largeScale & " SMALL=" & smallScale & " WIDE=" & wideScale & " ISO=" & isoScale & " perm=" & bestPerm(0) & bestPerm(1) & bestPerm(2))
+        Dim vMain As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.MainMeasure, best.MainFit, best.MainSlot)
+        If vMain Is Nothing Then Return False
 
-        ' 6. Размещаем виды в слоты (с учётом найденной перестановки)
-        Dim v1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, measures(bestPerm(0)), largeScale, csLarge)
-        AddDimNotes(doc, sheet, v1, csLarge)
-        Dim v2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, measures(bestPerm(1)), smallScale, csSmall)
-        AddDimNotes(doc, sheet, v2, csSmall)
-        Dim v3 As DrawingView = PlaceViewInSlot(sheet, modelDoc, measures(bestPerm(2)), wideScale,  csWide)
-        AddDimNotes(doc, sheet, v3, csWide)
+        Dim vAux1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.Aux1Measure, best.Aux1Fit, best.Aux1Slot)
+        Dim vAux2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.Aux2Measure, best.Aux2Fit, best.Aux2Slot)
 
-        If v1 Is Nothing OrElse v2 Is Nothing OrElse v3 Is Nothing Then
-            Debug.Print("WARN: не все основные виды размещены")
-            If v1 Is Nothing AndAlso v2 Is Nothing AndAlso v3 Is Nothing Then Return False
+        If vAux1 Is Nothing OrElse vAux2 Is Nothing Then
+            Debug.Print("WARN: не удалось разместить все ортогональные виды")
         End If
 
-        ' ISO
-        If isoScale > 0 AndAlso mIso IsNot Nothing Then
-            Try
-                Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, mIso, isoScale, csIso)
-                AddDimNotes(doc, sheet, isoV, csIso)
-            Catch
-            End Try
+        AddDimNotes(doc, sheet, vMain, best.MainSlot, True)
+        AddDimNotes(doc, sheet, vAux1, best.Aux1Slot, False)
+        AddDimNotes(doc, sheet, vAux2, best.Aux2Slot, False)
+
+        If best.IsoFit IsNot Nothing AndAlso best.IsoFit.Scale > 0 AndAlso mIso IsNot Nothing Then
+            Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, mIso, best.IsoFit, best.IsoSlot)
+            If isoV IsNot Nothing Then
+                Try
+                    isoV.ShowLabel = False
+                Catch
+                End Try
+            End If
         End If
 
         Return True
     End Function
 
-    ' v3.10: Размеры через DrawingNotes — реальные мм из масштаба вида
+    Private Function BuildLayoutPatterns(doc As DrawingDocument, safe As SlotRect, gap As Double) As List(Of LayoutPattern)
+        Dim result As New List(Of LayoutPattern)()
+        Dim w As Double = RectW(safe)
+        Dim h As Double = RectH(safe)
+        If w <= gap * 4 OrElse h <= gap * 4 Then Return result
+
+        Dim topBand As Double = Math.Max(h * 0.24, Cm(doc, 30.0))
+        topBand = Math.Min(topBand, h * 0.34)
+        Dim rightCol As Double = Math.Max(w * 0.25, Cm(doc, 40.0))
+        rightCol = Math.Min(rightCol, w * 0.34)
+
+        ' Pattern A: главный широкий снизу, два вспомогательных сверху, ISO справа сверху
+        Dim pA As New LayoutPattern()
+        pA.MainSlot = New SlotRect(safe.L, safe.R, safe.B, safe.T - topBand - gap)
+        pA.Aux1Slot = New SlotRect(safe.L, safe.L + (w - gap) / 2.0, safe.T - topBand, safe.T)
+        pA.Aux2Slot = New SlotRect(safe.L + (w + gap) / 2.0, safe.R - rightCol - gap, safe.T - topBand, safe.T)
+        pA.IsoSlot = New SlotRect(safe.R - rightCol, safe.R, safe.T - topBand, safe.T)
+        result.Add(pA)
+
+        ' Pattern B: главный слева, вспомогательные справа стопкой, ISO в правом верхнем углу
+        Dim pB As New LayoutPattern()
+        pB.MainSlot = New SlotRect(safe.L, safe.R - rightCol - gap, safe.B, safe.T)
+        pB.Aux1Slot = New SlotRect(safe.R - rightCol, safe.R, safe.B + (h + gap) / 2.0, safe.T - topBand * 0.15)
+        pB.Aux2Slot = New SlotRect(safe.R - rightCol, safe.R, safe.B, safe.B + (h - gap) / 2.0)
+        pB.IsoSlot = New SlotRect(safe.R - rightCol, safe.R, safe.T - topBand, safe.T)
+        result.Add(pB)
+
+        ' Pattern C: главный справа, вспомогательные слева стопкой
+        Dim pC As New LayoutPattern()
+        pC.MainSlot = New SlotRect(safe.L + rightCol + gap, safe.R, safe.B, safe.T)
+        pC.Aux1Slot = New SlotRect(safe.L, safe.L + rightCol, safe.B + (h + gap) / 2.0, safe.T - topBand * 0.15)
+        pC.Aux2Slot = New SlotRect(safe.L, safe.L + rightCol, safe.B, safe.B + (h - gap) / 2.0)
+        pC.IsoSlot = New SlotRect(safe.L, safe.L + rightCol, safe.T - topBand, safe.T)
+        result.Add(pC)
+
+        For Each p As LayoutPattern In result
+            p.MainSlot = InsetRect(p.MainSlot, gap * 0.25)
+            p.Aux1Slot = InsetRect(p.Aux1Slot, gap * 0.25)
+            p.Aux2Slot = InsetRect(p.Aux2Slot, gap * 0.25)
+            p.IsoSlot = InsetRect(p.IsoSlot, gap * 0.2)
+        Next
+        Return result
+    End Function
+
+    Private Function EvaluatePlan(ptn As LayoutPattern,
+                                  mainM As ViewMeasure,
+                                  aux1M As ViewMeasure,
+                                  aux2M As ViewMeasure,
+                                  isoM As ViewMeasure) As LayoutPlan
+        Dim plan As New LayoutPlan()
+        plan.MainSlot = ptn.MainSlot
+        plan.Aux1Slot = ptn.Aux1Slot
+        plan.Aux2Slot = ptn.Aux2Slot
+        plan.IsoSlot = ptn.IsoSlot
+
+        plan.MainFit = ScaleToFit(plan.MainSlot, mainM, ORTHO_SCALE_MARGIN)
+        plan.Aux1Fit = ScaleToFit(plan.Aux1Slot, aux1M, ORTHO_SCALE_MARGIN)
+        plan.Aux2Fit = ScaleToFit(plan.Aux2Slot, aux2M, ORTHO_SCALE_MARGIN)
+        If isoM IsNot Nothing Then plan.IsoFit = ScaleToFit(plan.IsoSlot, isoM, ISO_SCALE_MARGIN)
+
+        If plan.MainFit Is Nothing OrElse plan.MainFit.Scale <= 0 Then Return Nothing
+        If plan.Aux1Fit Is Nothing OrElse plan.Aux1Fit.Scale <= 0 Then Return Nothing
+        If plan.Aux2Fit Is Nothing OrElse plan.Aux2Fit.Scale <= 0 Then Return Nothing
+
+        Dim mainArea As Double = plan.MainFit.ProjectedW * plan.MainFit.ProjectedH
+        Dim auxArea As Double = plan.Aux1Fit.ProjectedW * plan.Aux1Fit.ProjectedH +
+                                plan.Aux2Fit.ProjectedW * plan.Aux2Fit.ProjectedH
+        Dim isoArea As Double = 0
+        If plan.IsoFit IsNot Nothing Then
+            isoArea = plan.IsoFit.ProjectedW * plan.IsoFit.ProjectedH
+        End If
+
+        Dim workArea As Double = RectW(plan.MainSlot) * RectH(plan.MainSlot) +
+                                 RectW(plan.Aux1Slot) * RectH(plan.Aux1Slot) +
+                                 RectW(plan.Aux2Slot) * RectH(plan.Aux2Slot)
+        If workArea <= 0 Then Return Nothing
+
+        Dim fill As Double = (mainArea + auxArea + isoArea * 0.5) / workArea
+        Dim mainDominance As Double = mainArea / Math.Max(0.0001, (mainArea + auxArea))
+        Dim compactness As Double = Math.Min(fill, 0.9)
+
+        plan.Score = compactness * 0.55 + mainDominance * 0.45
+        If mainDominance < 0.45 Then plan.Score -= 0.3
+        Return plan
+    End Function
+
     Private Sub AddDimNotes(doc As DrawingDocument, sheet As Sheet,
-                             v As DrawingView, slot As SlotRect)
+                            v As DrawingView, slot As SlotRect,
+                            isMain As Boolean)
         If v Is Nothing Then Return
+
+        Dim added As Integer = 0
+        If isMain Then
+            added += TryAddTrueDimensions(doc, sheet, v, slot, True, True)
+        Else
+            added += TryAddTrueDimensions(doc, sheet, v, slot, True, False)
+        End If
+
+        If isMain Then
+            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, True)
+        Else
+            If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, False)
+        End If
+    End Sub
+
+    Private Function TryAddTrueDimensions(doc As DrawingDocument, sheet As Sheet,
+                                          v As DrawingView, slot As SlotRect,
+                                          addHorizontal As Boolean,
+                                          addVertical As Boolean) As Integer
+        Dim count As Integer = 0
+        Try
+            Dim curves As DrawingCurvesEnumerator = v.DrawingCurves
+            If curves Is Nothing OrElse curves.Count < 2 Then Return 0
+
+            Dim minXCurve As DrawingCurve = Nothing
+            Dim maxXCurve As DrawingCurve = Nothing
+            Dim minYCurve As DrawingCurve = Nothing
+            Dim maxYCurve As DrawingCurve = Nothing
+            Dim minX As Double = Double.MaxValue
+            Dim maxX As Double = Double.MinValue
+            Dim minY As Double = Double.MaxValue
+            Dim maxY As Double = Double.MinValue
+
+            For i As Integer = 1 To curves.Count
+                Dim c As DrawingCurve = curves.Item(i)
+                Dim rb As Box2d = c.RangeBox
+                Dim cx As Double = (rb.MinPoint.X + rb.MaxPoint.X) / 2.0
+                Dim cy As Double = (rb.MinPoint.Y + rb.MaxPoint.Y) / 2.0
+                If cx < minX Then minX = cx : minXCurve = c
+                If cx > maxX Then maxX = cx : maxXCurve = c
+                If cy < minY Then minY = cy : minYCurve = c
+                If cy > maxY Then maxY = cy : maxYCurve = c
+            Next
+
+            If addHorizontal AndAlso minXCurve IsNot Nothing AndAlso maxXCurve IsNot Nothing Then
+                Try
+                    Dim i1 As GeometryIntent = sheet.CreateGeometryIntent(minXCurve, PointIntentEnum.kMidPointIntent)
+                    Dim i2 As GeometryIntent = sheet.CreateGeometryIntent(maxXCurve, PointIntentEnum.kMidPointIntent)
+                    Dim p As Point2d = _app.TransientGeometry.CreatePoint2d((slot.L + slot.R) / 2.0, Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 4.0)))
+                    sheet.DrawingDimensions.GeneralDimensions.AddLinear(p, i1, i2, DimensionTypeEnum.kHorizontalDimensionType)
+                    count += 1
+                Catch
+                End Try
+            End If
+
+            If addVertical AndAlso minYCurve IsNot Nothing AndAlso maxYCurve IsNot Nothing Then
+                Try
+                    Dim j1 As GeometryIntent = sheet.CreateGeometryIntent(minYCurve, PointIntentEnum.kMidPointIntent)
+                    Dim j2 As GeometryIntent = sheet.CreateGeometryIntent(maxYCurve, PointIntentEnum.kMidPointIntent)
+                    Dim p2 As Point2d = _app.TransientGeometry.CreatePoint2d(Math.Min(slot.R - Cm(doc, 1.0), v.Left + v.Width + Cm(doc, 3.0)), (slot.B + slot.T) / 2.0)
+                    sheet.DrawingDimensions.GeneralDimensions.AddLinear(p2, j1, j2, DimensionTypeEnum.kVerticalDimensionType)
+                    count += 1
+                Catch
+                End Try
+            End If
+        Catch ex As Exception
+            Debug.Print("WARN TryAddTrueDimensions: " & ex.Message)
+        End Try
+        Return count
+    End Function
+
+    Private Sub AddFallbackDimensionNotes(doc As DrawingDocument, sheet As Sheet,
+                                          v As DrawingView, slot As SlotRect,
+                                          addHorizontal As Boolean,
+                                          addVertical As Boolean)
         Try
             Dim sc As Double = v.Scale
             If sc <= 0.0001 Then Return
-            Dim realW As Double = Math.Round(v.Width  / sc * 10.0)
-            Dim realH As Double = Math.Round(v.Height / sc * 10.0)
-            Dim cx As Double = (slot.L + slot.R) / 2.0
-            Dim cy As Double = (slot.B + slot.T) / 2.0
-            ' Горизонтальный размер — НАД видом
-            sheet.DrawingNotes.Add(
-                _app.TransientGeometry.CreatePoint2d(cx, slot.T + Cm(doc, 5.0)),
-                String.Format("{0:F0}", realW))
-            ' Вертикальный размер — СПРАВА от вида
-            If realH > 1 Then
-                sheet.DrawingNotes.Add(
-                    _app.TransientGeometry.CreatePoint2d(slot.R + Cm(doc, 6.0), cy),
-                    String.Format("{0:F0}", realH))
+
+            Dim realWmm As Double = Math.Round(v.Width / sc * 10.0)
+            Dim realHmm As Double = Math.Round(v.Height / sc * 10.0)
+
+            If addHorizontal AndAlso realWmm > 1 Then
+                Dim px As Double = Math.Max(slot.L + Cm(doc, 3.0), Math.Min(slot.R - Cm(doc, 3.0), v.Left + v.Width / 2.0))
+                Dim py As Double = Math.Min(slot.T - Cm(doc, 1.0), v.Top + Cm(doc, 5.0))
+                sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, py),
+                                       "↔ " & String.Format("{0:F0} мм", realWmm))
+            End If
+
+            If addVertical AndAlso realHmm > 1 Then
+                Dim rightSpace As Double = slot.R - (v.Left + v.Width)
+                Dim leftSpace As Double = v.Left - slot.L
+                Dim px2 As Double
+                If rightSpace >= leftSpace Then
+                    px2 = Math.Min(slot.R - Cm(doc, 1.0), v.Left + v.Width + Cm(doc, 2.5))
+                Else
+                    px2 = Math.Max(slot.L + Cm(doc, 1.0), v.Left - Cm(doc, 2.5))
+                End If
+                Dim py2 As Double = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0))
+                sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px2, py2),
+                                       "↕ " & String.Format("{0:F0} мм", realHmm))
             End If
         Catch ex As Exception
-            Debug.Print("WARN AddDimNotes: " & ex.Message)
+            Debug.Print("WARN AddFallbackDimensionNotes: " & ex.Message)
         End Try
     End Sub
 
-    ' Создаёт probe-вид, замеряет размеры при масштабе 1:1, удаляет
     Private Function MeasureView(sheet As Sheet, modelDoc As Document,
                                  orient As ViewOrientationTypeEnum,
                                  style As DrawingViewStyleEnum) As ViewMeasure
@@ -522,12 +658,15 @@ Public Class AlbumBuilder
                 probe.ShowLabel = False
             Catch
             End Try
-            _app.ActiveDocument.Update2(True)
+
+            Dim dd As DrawingDocument = TryCast(sheet.Parent, DrawingDocument)
+            If dd IsNot Nothing Then dd.Update2(True)
+
             Dim m As New ViewMeasure()
-            m.UnitW = probe.Width  / PROBE_SCALE
+            m.UnitW = probe.Width / PROBE_SCALE
             m.UnitH = probe.Height / PROBE_SCALE
             m.Orient = orient
-            m.Style  = style
+            m.Style = style
             If m.UnitW < 0.0001 AndAlso m.UnitH < 0.0001 Then Return Nothing
             Return m
         Catch ex As Exception
@@ -543,48 +682,92 @@ Public Class AlbumBuilder
         End Try
     End Function
 
-    ' Подбирает масштаб вписания вида в слот (учитывает поворот на 90°)
-    Private Function ScaleToFit(slot As SlotRect, m As ViewMeasure, margin As Double) As Double
-        If m Is Nothing Then Return 0
-        Dim sw As Double = slot.R - slot.L
-        Dim sh As Double = slot.T - slot.B
-        If sw <= 0 OrElse sh <= 0 Then Return 0
-        Dim sc0 As Double = 0
-        Dim sc90 As Double = 0
-        If m.UnitW > 0.0001 AndAlso m.UnitH > 0.0001 Then
-            sc0 = Math.Min(sw / m.UnitW, sh / m.UnitH) * margin
+    Private Function ScaleToFit(slot As SlotRect, m As ViewMeasure, margin As Double) As FitResult
+        If m Is Nothing Then Return Nothing
+        Dim sw As Double = RectW(slot)
+        Dim sh As Double = RectH(slot)
+        If sw <= 0 OrElse sh <= 0 Then Return Nothing
+
+        Dim res0 As FitResult = BuildFitResult(sw, sh, m.UnitW, m.UnitH, margin, False)
+        Dim res90 As FitResult = BuildFitResult(sw, sh, m.UnitW, m.UnitH, margin, True)
+
+        Dim best As FitResult = res0
+        If best Is Nothing OrElse (res90 IsNot Nothing AndAlso res90.Scale > best.Scale) Then
+            best = res90
         End If
-        ' Попробуем поворот 90°
-        If m.UnitH > 0.0001 AndAlso m.UnitW > 0.0001 Then
-            sc90 = Math.Min(sw / m.UnitH, sh / m.UnitW) * margin
-        End If
-        Dim best As Double = Math.Max(sc0, sc90)
-        If best > 2.0 Then best = 2.0
-        If best < 0.02 Then Return 0
         Return best
     End Function
 
-    ' Размещает вид в центр слота с заданным масштабом (без shrink-цикла)
+    Private Function BuildFitResult(slotW As Double, slotH As Double,
+                                    unitW As Double, unitH As Double,
+                                    margin As Double, rotate90 As Boolean) As FitResult
+        Dim w As Double = unitW
+        Dim h As Double = unitH
+        If rotate90 Then
+            w = unitH
+            h = unitW
+        End If
+        If w <= 0.0001 OrElse h <= 0.0001 Then Return Nothing
+
+        Dim sc As Double = Math.Min(slotW / w, slotH / h) * margin
+        sc = Math.Min(sc, 2.0)
+        If sc < 0.02 Then Return Nothing
+
+        Dim r As New FitResult()
+        r.Scale = sc
+        r.Rotate90 = rotate90
+        r.ProjectedW = w * sc
+        r.ProjectedH = h * sc
+        Return r
+    End Function
+
     Private Function PlaceViewInSlot(sheet As Sheet, modelDoc As Document,
-                                     m As ViewMeasure, scaleVal As Double,
+                                     m As ViewMeasure, fit As FitResult,
                                      slot As SlotRect) As DrawingView
-        If m Is Nothing Then Return Nothing
+        If m Is Nothing OrElse fit Is Nothing Then Return Nothing
         Dim cx As Double = (slot.L + slot.R) / 2.0
         Dim cy As Double = (slot.B + slot.T) / 2.0
         Dim v As DrawingView = Nothing
+
         Try
             v = sheet.DrawingViews.AddBaseView(
                 modelDoc,
                 _app.TransientGeometry.CreatePoint2d(cx, cy),
-                scaleVal, m.Orient, m.Style)
+                fit.Scale, m.Orient, m.Style)
             If v Is Nothing Then Return Nothing
+
             Try
                 v.ShowLabel = False
             Catch
             End Try
+
+            If fit.Rotate90 Then
+                Try
+                    v.Rotation = v.Rotation + Math.PI / 2.0
+                Catch exRot As Exception
+                    Debug.Print("WARN Rotate90: " & exRot.Message)
+                End Try
+            End If
+
+            Dim dd As DrawingDocument = TryCast(sheet.Parent, DrawingDocument)
+            If dd IsNot Nothing Then dd.Update2(True)
+
+            Dim iterations As Integer = 0
+            While Not ViewFitsSlot(v, slot) AndAlso iterations < 12
+                iterations += 1
+                Dim nextScale As Double = v.Scale * 0.92
+                If nextScale < 0.02 Then Exit While
+                v.Scale = nextScale
+                If dd IsNot Nothing Then dd.Update2(True)
+            End While
+
+            If Not ViewFitsSlot(v, slot) Then
+                Debug.Print("WARN: view still not fitting slot")
+            End If
             Return v
+
         Catch ex As Exception
-            Debug.Print("WARN PlaceViewInSlot sc=" & scaleVal & ": " & ex.Message)
+            Debug.Print("WARN PlaceViewInSlot: " & ex.Message)
             If v IsNot Nothing Then
                 Try
                     v.Delete()
@@ -595,10 +778,8 @@ Public Class AlbumBuilder
         End Try
     End Function
 
-    ' Проверяет вписание вида в слот через Left/Top (VBA-стиль)
-    ' v.Left = левый край, v.Top = верхний край (Y снизу вверх)
-    ' bounds: Left=v.Left, Right=v.Left+v.Width, Bottom=v.Top-v.Height, Top=v.Top
     Private Function ViewFitsSlot(v As DrawingView, slot As SlotRect) As Boolean
+        If v Is Nothing Then Return False
         Dim vL As Double = v.Left
         Dim vT As Double = v.Top
         Dim vR As Double = vL + v.Width
@@ -608,55 +789,34 @@ Public Class AlbumBuilder
                 vB >= slot.B - eps AndAlso vT <= slot.T + eps)
     End Function
 
-    ' SafeArea по реальному TitleBlock.RangeBox (как VBA GetSheetSafeRectCm)
-    Private Function GetSheetSafeRect(sheet As Sheet) As SlotRect
-        Dim w As Double = sheet.Width
-        Dim h As Double = sheet.Height
+    Private Function GetSheetSafeRect(doc As DrawingDocument, sheet As Sheet) As SlotRect
+        Dim frameL As Double = Cm(doc, FRAME_L_MM)
+        Dim frameR As Double = Cm(doc, A3_W_MM - FRAME_O_MM)
+        Dim frameB As Double = Cm(doc, FRAME_O_MM)
+        Dim frameT As Double = Cm(doc, A3_H_MM - FRAME_O_MM)
 
-        Dim wL As Double = w * SAFE_LEFT_RATIO
-        Dim wR As Double = w * (1.0 - SAFE_RIGHT_RATIO)
-        Dim wB As Double = h * SAFE_BOTTOM_RATIO
-        Dim wT As Double = h * (1.0 - SAFE_TOP_RATIO)
+        Dim l As Double = frameL + Cm(doc, 4.0)
+        Dim r As Double = frameR - Cm(doc, 3.0)
+        Dim b As Double = frameB + Cm(doc, 3.0)
+        Dim t As Double = frameT - Cm(doc, 3.0)
 
-        ' Учитываем реальный TitleBlock
         Try
             If sheet.TitleBlock IsNot Nothing Then
                 Dim rb As Box2d = sheet.TitleBlock.RangeBox
                 If rb IsNot Nothing Then
-                    ' Штамп в нижнем правом углу — MaxPoint.Y = верхний край штампа (в см)
                     Dim tbTop As Double = Math.Max(rb.MinPoint.Y, rb.MaxPoint.Y)
-                    Dim tbGapY As Double = h * TITLEBLOCK_GAP_RATIO
-                    Debug.Print("SafeArea: sheet h=" & h & " tbTop=" & tbTop & " gap=" & tbGapY & " wB before=" & wB)
-                    If tbTop + tbGapY > wB Then
-                        wB = tbTop + tbGapY
-                    End If
-                    Debug.Print("SafeArea: wB after=" & wB)
+                    b = Math.Max(b, tbTop + Cm(doc, 4.0))
                 End If
             End If
         Catch ex As Exception
-            Debug.Print("SafeArea TB err: " & ex.Message)
+            Debug.Print("SafeRect TB err: " & ex.Message)
         End Try
 
-        ' Fallback если зона вырождена (высота < 20% листа)
-        If wT <= wB + h * 0.2 Then
-            wB = h * 0.22   ' 22% от низа = ~65мм — больше чем штамп 55мм
-            wT = h * 0.96
-            Debug.Print("SafeArea: FALLBACK wB=" & wB & " wT=" & wT)
+        If t <= b + Cm(doc, 25.0) Then
+            b = Cm(doc, 65.0)
+            t = frameT - Cm(doc, 2.0)
         End If
-
-        Debug.Print("SafeArea final: L=" & wL & " R=" & wR & " B=" & wB & " T=" & wT & " W=" & (wR-wL) & " H=" & (wT-wB))
-        Return New SlotRect(wL, wR, wB, wT)
-    End Function
-
-    ' Слот с учётом отступа на подпись сверху
-    Private Function ContentSlot(raw As SlotRect, padCm As Double, topClear As Double) As SlotRect
-        Dim t As Double = raw.T - topClear
-        Dim b As Double = raw.B + padCm
-        If t <= b + padCm Then
-            t = raw.T - padCm
-            b = raw.B + padCm
-        End If
-        Return New SlotRect(raw.L + padCm, raw.R - padCm, b, t)
+        Return New SlotRect(l, r, b, t)
     End Function
 
     Private Function InsetRect(r As SlotRect, d As Double) As SlotRect
@@ -668,7 +828,6 @@ Public Class AlbumBuilder
     Private Function RectH(r As SlotRect) As Double
         Return r.T - r.B
     End Function
-
     ' ================================================================
     '  РАМКА СПДС А3
     ' ================================================================
@@ -875,6 +1034,38 @@ Public Class AlbumBuilder
         Public UnitH  As Double
         Public Orient As ViewOrientationTypeEnum
         Public Style  As DrawingViewStyleEnum
+    End Class
+
+    Public Class FitResult
+        Public Scale As Double
+        Public Rotate90 As Boolean
+        Public ProjectedW As Double
+        Public ProjectedH As Double
+    End Class
+
+    Public Class LayoutPattern
+        Public MainSlot As SlotRect
+        Public Aux1Slot As SlotRect
+        Public Aux2Slot As SlotRect
+        Public IsoSlot As SlotRect
+    End Class
+
+    Public Class LayoutPlan
+        Public MainSlot As SlotRect
+        Public Aux1Slot As SlotRect
+        Public Aux2Slot As SlotRect
+        Public IsoSlot As SlotRect
+
+        Public MainFit As FitResult
+        Public Aux1Fit As FitResult
+        Public Aux2Fit As FitResult
+        Public IsoFit As FitResult
+
+        Public MainMeasure As ViewMeasure
+        Public Aux1Measure As ViewMeasure
+        Public Aux2Measure As ViewMeasure
+
+        Public Score As Double
     End Class
 
     Public Class AlbumItem
