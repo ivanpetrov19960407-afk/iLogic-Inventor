@@ -1,8 +1,11 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.14
+' StoneAlbumRule.ilogic.vb  –  v3.15
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.15: prefer informative profile side using Front/Back and Left/Right comparison,
+'        enable captions and dimensions for views,
+'        prefer profile-like auxiliary view in left slot and longitudinal/simple auxiliary view in right slot
 ' v3.14: smart auxiliary view selection from Front/Top/Right,
 '        disable view notes by default, remove shrink loop from PlaceViewInSlot
 ' v3.13: restore border re-edit (removed early return in EnsureBorder),
@@ -142,7 +145,10 @@ Public Class AlbumBuilder
     Private Const TB_NAME       As String = "RKM_SPDS_A3_FORM3_V17"
     Private Const SHEET_PFX     As String = "ALB_"
     Private Const ALBUM_MODE_VISUAL As Boolean = True
-    Private Const ADD_VIEW_NOTES As Boolean = False
+    Private Const ADD_VIEW_NOTES As Boolean = True
+    Private Const ADD_VIEW_DIMENSIONS As Boolean = True
+    Private Const VIEW_CAPTION_GAP_MM As Double = 5.0
+    Private Const VIEW_DIM_MIN_MM As Double = 10.0
 
     ' Параметры layout (точно из VBA RKM_IdwAlbum.bas)
     Private Const GAP_MM              As Double = 8.0
@@ -406,20 +412,21 @@ Public Class AlbumBuilder
         Dim safe As SlotRect = GetSheetSafeRect(doc, sheet)
         Dim gap As Double = Cm(doc, GAP_MM)
 
-        Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-        Dim mTop As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-        Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
-        Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle)
+        Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "FRONT", "Вид спереди")
+        Dim mBack As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kBackViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "BACK", "Вид сзади")
+        Dim mTop As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "TOP", "Вид сверху")
+        Dim mLeft As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kLeftViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "LEFT", "Вид слева")
+        Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "RIGHT", "Вид справа")
+        Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle, "ISO", "Изометрия")
 
         If ALBUM_MODE_VISUAL AndAlso mIso Is Nothing Then
             Debug.Print("WARN: не удалось измерить изометрический shaded вид")
             Return False
         End If
 
-        Dim auxMeasures As New List(Of ViewMeasure)()
-        If mFront IsNot Nothing Then auxMeasures.Add(mFront)
-        If mTop IsNot Nothing Then auxMeasures.Add(mTop)
-        If mRight IsNot Nothing Then auxMeasures.Add(mRight)
+        Dim preferredFrontBack As ViewMeasure = PickPreferredOppositeView(mFront, mBack)
+        Dim preferredLeftRight As ViewMeasure = PickPreferredOppositeView(mLeft, mRight)
+        Dim auxMeasures As List(Of ViewMeasure) = BuildPreferredAuxMeasures(preferredFrontBack, Nothing, mTop, preferredLeftRight, Nothing)
 
         If auxMeasures.Count < 2 Then
             Debug.Print("WARN: не удалось измерить два вспомогательных вида")
@@ -458,9 +465,9 @@ Public Class AlbumBuilder
         End If
 
         If ADD_VIEW_NOTES Then
-            AddDimNotes(doc, sheet, vMain, best.MainSlot, True)
-            AddDimNotes(doc, sheet, vAux1, best.Aux1Slot, False)
-            AddDimNotes(doc, sheet, vAux2, best.Aux2Slot, False)
+            AddViewAnnotations(doc, sheet, vMain, best.MainSlot, best.MainMeasure, True)
+            AddViewAnnotations(doc, sheet, vAux1, best.Aux1Slot, best.Aux1Measure, False)
+            AddViewAnnotations(doc, sheet, vAux2, best.Aux2Slot, best.Aux2Measure, False)
         End If
 
         Return True
@@ -513,6 +520,61 @@ Public Class AlbumBuilder
         Return result
     End Function
 
+    Private Function PickPreferredOppositeView(preferred As ViewMeasure, alternate As ViewMeasure) As ViewMeasure
+        If preferred Is Nothing Then Return alternate
+        If alternate Is Nothing Then Return preferred
+
+        Dim d As Integer = preferred.CurveCount - alternate.CurveCount
+        If Math.Abs(d) > 1 Then
+            If d > 0 Then Return preferred
+            Return alternate
+        End If
+
+        If String.Equals(preferred.Key, "FRONT", StringComparison.OrdinalIgnoreCase) AndAlso
+           String.Equals(alternate.Key, "BACK", StringComparison.OrdinalIgnoreCase) Then
+            Return preferred
+        End If
+        If String.Equals(preferred.Key, "LEFT", StringComparison.OrdinalIgnoreCase) AndAlso
+           String.Equals(alternate.Key, "RIGHT", StringComparison.OrdinalIgnoreCase) Then
+            Return preferred
+        End If
+
+        Return preferred
+    End Function
+
+    Private Function BuildPreferredAuxMeasures(mFront As ViewMeasure,
+                                               mBack As ViewMeasure,
+                                               mTop As ViewMeasure,
+                                               mLeft As ViewMeasure,
+                                               mRight As ViewMeasure) As List(Of ViewMeasure)
+        Dim result As New List(Of ViewMeasure)()
+
+        Dim frontBack As ViewMeasure = PickPreferredOppositeView(mFront, mBack)
+        Dim leftRight As ViewMeasure = PickPreferredOppositeView(mLeft, mRight)
+
+        If frontBack IsNot Nothing Then result.Add(frontBack)
+        If mTop IsNot Nothing Then result.Add(mTop)
+        If leftRight IsNot Nothing Then result.Add(leftRight)
+
+        Return result
+    End Function
+
+    Private Function IsProfileLikeMeasure(m As ViewMeasure) As Boolean
+        If m Is Nothing Then Return False
+        If String.Equals(m.Key, "TOP", StringComparison.OrdinalIgnoreCase) Then Return False
+
+        If m.CurveCount >= 14 Then Return True
+        If m.CurveCount >= 9 AndAlso m.AspectRatio <= 5.5 Then Return True
+        If m.AspectRatio <= 3.2 Then Return True
+
+        Return False
+    End Function
+
+    Private Function IsLongitudinalMeasure(m As ViewMeasure) As Boolean
+        If m Is Nothing Then Return False
+        Return m.AspectRatio >= 4.0
+    End Function
+
     Private Function EvaluatePlanFlexible(ptn As LayoutPattern,
                                           mainM As ViewMeasure,
                                           auxA As ViewMeasure,
@@ -557,6 +619,29 @@ Public Class AlbumBuilder
 
             plan.Score = fill * 0.35 + mainDominance * 0.45 + auxBalance * 0.2
             If mainDominance < 0.45 Then plan.Score -= 0.3
+
+            Dim aux1Profile As Boolean = IsProfileLikeMeasure(a1)
+            Dim aux2Profile As Boolean = IsProfileLikeMeasure(a2)
+            Dim aux1Long As Boolean = IsLongitudinalMeasure(a1)
+            Dim aux2Long As Boolean = IsLongitudinalMeasure(a2)
+            Dim aux1Top As Boolean = String.Equals(a1.Key, "TOP", StringComparison.OrdinalIgnoreCase)
+            Dim aux2Top As Boolean = String.Equals(a2.Key, "TOP", StringComparison.OrdinalIgnoreCase)
+
+            If aux1Profile AndAlso (Not aux2Profile OrElse a1.CurveCount >= a2.CurveCount) Then
+                plan.Score += 0.1
+            End If
+
+            If aux2Long AndAlso (Not aux1Long OrElse a2.AspectRatio >= a1.AspectRatio) Then
+                plan.Score += 0.08
+            End If
+
+            If (aux1Top AndAlso Not aux2Top) OrElse (aux2Top AndAlso Not aux1Top) Then
+                plan.Score += 0.08
+            End If
+
+            If aux1Long AndAlso aux2Long AndAlso (Not aux1Profile) AndAlso (Not aux2Profile) Then
+                plan.Score -= 0.06
+            End If
 
             If best Is Nothing OrElse plan.Score > best.Score Then
                 best = plan
@@ -608,25 +693,38 @@ Public Class AlbumBuilder
         Return plan
     End Function
 
-    Private Sub AddDimNotes(doc As DrawingDocument, sheet As Sheet,
-                            v As DrawingView, slot As SlotRect,
-                            isMain As Boolean)
+    Private Sub AddViewAnnotations(doc As DrawingDocument, sheet As Sheet,
+                                   v As DrawingView, slot As SlotRect,
+                                   measure As ViewMeasure,
+                                   isMain As Boolean)
         If v Is Nothing Then Return
 
-        Dim added As Integer = 0
-        If isMain Then
-            Try
-                Dim px As Double = Math.Max(slot.L + Cm(doc, 3.0), Math.Min(slot.R - Cm(doc, 3.0), v.Left + v.Width / 2.0))
-                Dim py As Double = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0 - Cm(doc, 2.0)))
-                sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, py), "Главный вид (изометрия, shaded)")
-            Catch ex As Exception
-                Debug.Print("WARN AddDimNotes main caption: " & ex.Message)
-            End Try
-            Return
+        Dim caption As String = "Изометрия"
+        If Not isMain AndAlso measure IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(measure.Caption) Then
+            caption = measure.Caption
         End If
 
-        added += TryAddTrueDimensions(doc, sheet, v, slot, True, False)
-        If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, False)
+        Try
+            Dim capY As Double = v.Top - v.Height - Cm(doc, VIEW_CAPTION_GAP_MM)
+            Dim minY As Double = slot.B + Cm(doc, 2.0)
+            If capY < minY Then
+                capY = Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, VIEW_CAPTION_GAP_MM))
+            End If
+
+            Dim px As Double = Math.Max(slot.L + Cm(doc, 2.0), Math.Min(slot.R - Cm(doc, 2.0), v.Left + v.Width / 2.0))
+            capY = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), capY))
+            sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, capY), caption)
+        Catch ex As Exception
+            Debug.Print("WARN AddViewAnnotations caption: " & ex.Message)
+        End Try
+
+        If isMain OrElse (Not ADD_VIEW_DIMENSIONS) Then Return
+
+        Dim added As Integer = 0
+        added += TryAddTrueDimensions(doc, sheet, v, slot, True, True)
+        If added < 2 Then
+            AddFallbackDimensionNotes(doc, sheet, v, slot, True, True)
+        End If
     End Sub
 
     Private Function TryAddTrueDimensions(doc As DrawingDocument, sheet As Sheet,
@@ -696,14 +794,14 @@ Public Class AlbumBuilder
             Dim realWmm As Double = Math.Round(v.Width / sc * 10.0)
             Dim realHmm As Double = Math.Round(v.Height / sc * 10.0)
 
-            If addHorizontal AndAlso realWmm > 1 Then
+            If addHorizontal AndAlso realWmm >= VIEW_DIM_MIN_MM Then
                 Dim px As Double = Math.Max(slot.L + Cm(doc, 3.0), Math.Min(slot.R - Cm(doc, 3.0), v.Left + v.Width / 2.0))
-                Dim py As Double = Math.Min(slot.T - Cm(doc, 1.0), v.Top + Cm(doc, 5.0))
+                Dim py As Double = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 1.0), v.Top + Cm(doc, 5.0)))
                 sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, py),
                                        "↔ " & String.Format("{0:F0} мм", realWmm))
             End If
 
-            If addVertical AndAlso realHmm > 1 Then
+            If addVertical AndAlso realHmm >= VIEW_DIM_MIN_MM Then
                 Dim rightSpace As Double = slot.R - (v.Left + v.Width)
                 Dim leftSpace As Double = v.Left - slot.L
                 Dim px2 As Double
@@ -723,7 +821,9 @@ Public Class AlbumBuilder
 
     Private Function MeasureView(sheet As Sheet, modelDoc As Document,
                                  orient As ViewOrientationTypeEnum,
-                                 style As DrawingViewStyleEnum) As ViewMeasure
+                                 style As DrawingViewStyleEnum,
+                                 key As String,
+                                 caption As String) As ViewMeasure
         Dim probe As DrawingView = Nothing
         Try
             probe = sheet.DrawingViews.AddBaseView(
@@ -744,6 +844,23 @@ Public Class AlbumBuilder
             m.UnitH = probe.Height / PROBE_SCALE
             m.Orient = orient
             m.Style = style
+            m.Key = key
+            m.Caption = caption
+
+            Try
+                m.CurveCount = probe.DrawingCurves.Count
+            Catch
+                m.CurveCount = 0
+            End Try
+
+            Try
+                Dim mx As Double = Math.Max(m.UnitW, m.UnitH)
+                Dim mn As Double = Math.Max(0.0001, Math.Min(m.UnitW, m.UnitH))
+                m.AspectRatio = mx / mn
+            Catch
+                m.AspectRatio = 1.0
+            End Try
+
             If m.UnitW < 0.0001 AndAlso m.UnitH < 0.0001 Then Return Nothing
             Return m
         Catch ex As Exception
@@ -1103,6 +1220,10 @@ Public Class AlbumBuilder
         Public UnitH  As Double
         Public Orient As ViewOrientationTypeEnum
         Public Style  As DrawingViewStyleEnum
+        Public Key As String
+        Public Caption As String
+        Public CurveCount As Integer
+        Public AspectRatio As Double
     End Class
 
     Public Class AuxPair
