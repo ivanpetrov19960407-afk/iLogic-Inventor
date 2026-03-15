@@ -468,7 +468,7 @@ Public Class AlbumBuilder
         If ADD_VIEW_DIMENSIONS Then
             Dim dimPlan As DimensionPlan = BuildDimensionPlan(descriptor, roleMap)
             DebugPrintDimensionPlan(dimPlan)
-            ApplyDimensionPlan(doc, sheet, placedViews, roleMap, dimPlan)
+            ApplyDimensionPlan(doc, sheet, placedViews, roleMap, descriptor, dimPlan)
         End If
 
         Return True
@@ -477,6 +477,7 @@ Public Class AlbumBuilder
     Private Sub DebugPrintDescriptor(d As PartDescriptor)
         If d Is Nothing Then Return
         Debug.Print("Part family=" & d.Family.ToString() &
+                    ", archetype=" & d.DimArchetype.ToString() &
                     ", long=" & d.IsLong.ToString() &
                     ", thin=" & d.IsThin.ToString() &
                     ", domPlan=" & d.HasDominantPlan.ToString() &
@@ -507,6 +508,7 @@ Public Class AlbumBuilder
         Dim d As New PartDescriptor()
         If measures Is Nothing OrElse measures.Count = 0 Then
             d.Family = PartFamily.Plate
+            d.DimArchetype = DimensionArchetype.PlateSimple
             d.PreferredMainRole = ViewRole.PlanContour
             Return d
         End If
@@ -563,6 +565,11 @@ Public Class AlbumBuilder
         d.HasSymmetricRadialBand = (maxArcRatio >= 0.28 AndAlso strongArcCount >= 2)
         d.HasProfileBulge = (maxProfile >= 1.5 AndAlso maxPlan >= 0.95)
         d.HasStrongThicknessView = (maxAr >= 4.6 OrElse (second IsNot Nothing AndAlso second.AspectRatio >= 4.0))
+        d.HasRoundedDrip = d.HasEdgeRadiusOrDrip
+        d.HasRebate = d.HasDecorativeRecess
+        d.HasDovetailEnd = d.HasDovetailEnds OrElse d.HasBevelOrChamferEnds
+        d.HasProfileShelf = d.HasComplexProfile OrElse d.HasProfileBulge
+        d.HasMultipleRadialBands = d.HasSymmetricRadialBand
 
         Dim slopedCandidate As Boolean = (maxSlope >= 0.32 AndAlso domDiff >= 0.28 AndAlso strongSlopeCount >= 1)
         Dim radialCandidate As Boolean = (maxArcRatio >= 0.24 AndAlso (d.HasDominantPlan OrElse strongArcCount >= 2))
@@ -578,6 +585,26 @@ Public Class AlbumBuilder
             d.Family = PartFamily.Linear
         Else
             d.Family = PartFamily.Plate
+        End If
+
+        If d.Family = PartFamily.Sloped AndAlso d.HasDovetailEnd Then
+            d.DimArchetype = DimensionArchetype.SlopedDovetail
+        ElseIf d.Family = PartFamily.Radial Then
+            If d.HasMultipleRadialBands Then
+                d.DimArchetype = DimensionArchetype.RadialProfiled
+            Else
+                d.DimArchetype = DimensionArchetype.RadialSimple
+            End If
+        ElseIf d.Family = PartFamily.Linear Then
+            If d.HasComplexProfile AndAlso (d.HasProfileShelf OrElse d.HasRoundedDrip) Then
+                d.DimArchetype = DimensionArchetype.ProfiledStep
+            ElseIf d.HasComplexProfile Then
+                d.DimArchetype = DimensionArchetype.LinearProfiled
+            Else
+                d.DimArchetype = DimensionArchetype.LinearPlain
+            End If
+        Else
+            d.DimArchetype = DimensionArchetype.PlateSimple
         End If
 
         d.PreferredMainRole = ResolvePreferredMainRole(d)
@@ -968,48 +995,65 @@ Public Class AlbumBuilder
         Dim plan As New DimensionPlan()
         If descriptor Is Nothing Then Return plan
 
-        Select Case descriptor.Family
-            Case PartFamily.Plate
+        Select Case descriptor.DimArchetype
+            Case DimensionArchetype.PlateSimple
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallLength, ViewRole.PlanContour, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallWidth, ViewRole.PlanContour, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.ThicknessView, 0, True))
                 If descriptor.HasBevelOrChamferEnds Then plan.Intents.Add(NewIntent(DimensionIntentId.Chamfer, ViewRole.ThicknessView, 2, True))
-                If descriptor.HasEdgeRadiusOrDrip Then plan.Intents.Add(NewIntent(DimensionIntentId.EdgeBandWidth, ViewRole.CrossProfile, 2, True))
-                If descriptor.HasDecorativeRecess Then
-                    plan.Intents.Add(NewIntent(DimensionIntentId.RecessDepth, ViewRole.CrossProfile, 2, True))
-                    plan.Intents.Add(NewIntent(DimensionIntentId.RecessOffset, ViewRole.PlanContour, 2, True))
-                End If
 
-            Case PartFamily.Linear
+            Case DimensionArchetype.LinearPlain
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallLength, ViewRole.LongitudinalFacade, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallHeight, ViewRole.LongitudinalFacade, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.CrossProfile, 0, True))
+
+            Case DimensionArchetype.LinearProfiled
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallLength, ViewRole.LongitudinalFacade, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallHeight, ViewRole.LongitudinalFacade, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.CrossProfile, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.ProfileHeight, ViewRole.CrossProfile, 1, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.ProfileDepth, ViewRole.CrossProfile, 1, True))
-                If descriptor.HasComplexProfile Then
-                    plan.Intents.Add(NewIntent(DimensionIntentId.StepHeight, ViewRole.CrossProfile, 1, True))
-                    plan.Intents.Add(NewIntent(DimensionIntentId.LipDepth, ViewRole.CrossProfile, 2, True))
-                    plan.Intents.Add(NewIntent(DimensionIntentId.LipHeight, ViewRole.CrossProfile, 2, True))
-                End If
-                If descriptor.HasSlope OrElse descriptor.HasDovetailEnds Then plan.Intents.Add(NewIntent(DimensionIntentId.EndCutLength, ViewRole.LongitudinalFacade, 2, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.LipDepth, ViewRole.CrossProfile, 2, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.LipHeight, ViewRole.CrossProfile, 2, True))
 
-            Case PartFamily.Radial
+            Case DimensionArchetype.ProfiledStep
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallLength, ViewRole.LongitudinalFacade, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallWidth, ViewRole.PlanContour, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallHeight, ViewRole.LongitudinalFacade, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.ProfileHeight, ViewRole.CrossProfile, 1, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.ProfileDepth, ViewRole.CrossProfile, 1, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.StepHeight, ViewRole.CrossProfile, 1, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.LipDepth, ViewRole.CrossProfile, 2, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.LipHeight, ViewRole.CrossProfile, 2, True))
+                If descriptor.HasRoundedDrip Then
+                    plan.Intents.Add(NewIntent(DimensionIntentId.VisibleRadius, ViewRole.CrossProfile, 2, True))
+                ElseIf descriptor.HasBevelOrChamferEnds Then
+                    plan.Intents.Add(NewIntent(DimensionIntentId.Chamfer, ViewRole.CrossProfile, 2, True))
+                End If
+
+            Case DimensionArchetype.RadialSimple
                 plan.Intents.Add(NewIntent(DimensionIntentId.ChordOrSpan, ViewRole.PlanContour, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.RadiusMain, ViewRole.PlanContour, 0, True))
-                If descriptor.HasSymmetricRadialBand Then plan.Intents.Add(NewIntent(DimensionIntentId.RadiusSecondary, ViewRole.PlanContour, 1, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.CrossProfile, 0, True))
+
+            Case DimensionArchetype.RadialProfiled
+                plan.Intents.Add(NewIntent(DimensionIntentId.ChordOrSpan, ViewRole.PlanContour, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.RadiusMain, ViewRole.PlanContour, 0, True))
+                If descriptor.HasMultipleRadialBands Then plan.Intents.Add(NewIntent(DimensionIntentId.RadiusSecondary, ViewRole.PlanContour, 1, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.EdgeBandWidth, ViewRole.PlanContour, 1, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.CrossProfile, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.ProfileHeight, ViewRole.CrossProfile, 1, True))
-                If descriptor.HasProfileBulge Then plan.Intents.Add(NewIntent(DimensionIntentId.VisibleRadius, ViewRole.CrossProfile, 2, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.ProfileDepth, ViewRole.CrossProfile, 1, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.VisibleRadius, ViewRole.CrossProfile, 2, True))
 
-            Case PartFamily.Sloped
+            Case DimensionArchetype.SlopedDovetail
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallLength, ViewRole.SlopeView, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.OverallWidth, ViewRole.PlanContour, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.ThicknessView, 1, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.SlopeHeightHigh, ViewRole.SlopeView, 0, True))
                 plan.Intents.Add(NewIntent(DimensionIntentId.SlopeHeightLow, ViewRole.SlopeView, 0, True))
-                plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.ThicknessView, 1, True))
-                If descriptor.HasDovetailEnds OrElse descriptor.HasSlope Then plan.Intents.Add(NewIntent(DimensionIntentId.EndCutLength, ViewRole.SlopeView, 2, True))
-                If descriptor.HasBevelOrChamferEnds Then plan.Intents.Add(NewIntent(DimensionIntentId.Chamfer, ViewRole.SlopeView, 2, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.EndCutLength, ViewRole.SlopeView, 2, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.Chamfer, ViewRole.SlopeView, 2, True))
         End Select
         Return plan
     End Function
@@ -1030,6 +1074,7 @@ Public Class AlbumBuilder
                                    sheet As Sheet,
                                    placedViews As Dictionary(Of ViewRole, DrawingView),
                                    roleMap As RoleMap,
+                                   descriptor As PartDescriptor,
                                    plan As DimensionPlan)
         If plan Is Nothing OrElse placedViews Is Nothing Then Return
         Dim placedIntents As New HashSet(Of DimensionIntentId)()
@@ -1037,6 +1082,7 @@ Public Class AlbumBuilder
         Dim viewFeatureCount As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         Dim viewIntentKeys As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         Dim realDimCount As Integer = 0
+        Dim pendingFallback As New List(Of FallbackRequest)()
 
         plan.Intents.Sort(Function(a As DimensionIntent, b As DimensionIntent) a.Priority.CompareTo(b.Priority))
         For Each intent As DimensionIntent In plan.Intents
@@ -1069,9 +1115,13 @@ Public Class AlbumBuilder
                 placedIntents.Add(intent.IntentId)
                 realDimCount += added
             ElseIf intent.AllowFallbackNote Then
-                Dim m As ViewMeasure = roleMap.GetMeasure(targetRole)
-                AddFallbackDimensionNotes(doc, sheet, v, slot, intent.IntentId, m)
-                placedIntents.Add(intent.IntentId)
+                Dim req As New FallbackRequest()
+                req.Intent = intent.IntentId
+                req.Role = targetRole
+                req.View = v
+                req.Slot = slot
+                req.Measure = roleMap.GetMeasure(targetRole)
+                pendingFallback.Add(req)
             End If
         Next
 
@@ -1080,11 +1130,20 @@ Public Class AlbumBuilder
         If placedViews.ContainsKey(ViewRole.SlopeView) Then keyViews.Add(placedViews(ViewRole.SlopeView))
         If keyViews.Count = 1 AndAlso placedViews.ContainsKey(ViewRole.LongitudinalFacade) Then keyViews.Add(placedViews(ViewRole.LongitudinalFacade))
 
-        For Each keyView As DrawingView In keyViews
-            If realDimCount >= 5 Then Exit For
-            Dim slot As SlotRect = New SlotRect(keyView.Left, keyView.Left + keyView.Width, keyView.Top - keyView.Height, keyView.Top)
-            Dim supplement As Integer = TryAddTrueDimensions(doc, sheet, keyView, slot, True, True, True, True, 5 - realDimCount)
-            realDimCount += supplement
+        Dim requireFive As Boolean = (descriptor IsNot Nothing AndAlso (descriptor.DimArchetype = DimensionArchetype.ProfiledStep OrElse descriptor.DimArchetype = DimensionArchetype.RadialProfiled))
+        If requireFive Then
+            For Each keyView As DrawingView In keyViews
+                If realDimCount >= 5 Then Exit For
+                Dim slot As SlotRect = New SlotRect(keyView.Left, keyView.Left + keyView.Width, keyView.Top - keyView.Height, keyView.Top)
+                Dim supplement As Integer = TryAddTrueDimensions(doc, sheet, keyView, slot, True, True, True, True, 5 - realDimCount)
+                realDimCount += supplement
+            Next
+        End If
+
+        For Each req As FallbackRequest In pendingFallback
+            If placedIntents.Contains(req.Intent) Then Continue For
+            AddFallbackDimensionNotes(doc, sheet, req.View, req.Slot, req.Intent, req.Measure)
+            placedIntents.Add(req.Intent)
         Next
     End Sub
 
@@ -1149,6 +1208,12 @@ Public Class AlbumBuilder
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
         Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True)
+        If added = 0 Then
+            added += TryAddOuterInnerDimension(doc, sheet, v, slot, addH)
+            If intent = DimensionIntentId.SlopeHeightHigh OrElse intent = DimensionIntentId.SlopeHeightLow Then
+                added += TryAddSlopeHeightByExtremums(doc, sheet, v, slot)
+            End If
+        End If
         If added > 0 Then
             usedKeys.Add(dedupeKey)
             counters(viewKey) = GetCounter(counters, viewKey) + added
@@ -1161,12 +1226,23 @@ Public Class AlbumBuilder
                                              usedKeys As HashSet(Of String),
                                              counters As Dictionary(Of String, Integer),
                                              viewKey As String) As Integer
+        If intent = DimensionIntentId.RadiusMain OrElse intent = DimensionIntentId.RadiusSecondary Then
+            Dim byRadius As Integer = TryAddRadiusDimension(sheet, v)
+            If byRadius > 0 Then Return byRadius
+        End If
+
         Dim addH As Boolean = (intent = DimensionIntentId.LipDepth OrElse intent = DimensionIntentId.RecessOffset OrElse intent = DimensionIntentId.EndCutLength OrElse intent = DimensionIntentId.EdgeBandWidth)
         Dim addV As Boolean = (intent = DimensionIntentId.LipHeight OrElse intent = DimensionIntentId.RecessDepth OrElse intent = DimensionIntentId.Chamfer)
 
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
         Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True)
+        If added = 0 Then
+            added += TryAddOuterInnerDimension(doc, sheet, v, slot, addH)
+            If intent = DimensionIntentId.EndCutLength OrElse intent = DimensionIntentId.Chamfer Then
+                added += TryAddSlopedProjectionDimension(doc, sheet, v, slot)
+            End If
+        End If
         If added > 0 Then
             usedKeys.Add(dedupeKey)
             counters(viewKey) = GetCounter(counters, viewKey) + added
@@ -1916,6 +1992,104 @@ Public Class AlbumBuilder
         Return pair
     End Function
 
+    Private Function TryAddOuterInnerDimension(doc As DrawingDocument,
+                                               sheet As Sheet,
+                                               v As DrawingView,
+                                               slot As SlotRect,
+                                               horizontalDim As Boolean) As Integer
+        If sheet Is Nothing OrElse v Is Nothing Then Return 0
+        Try
+            Dim bucket As CurveBucket = CollectViewCurves(v)
+            Dim pair As CurvePair = FindOuterInnerPairByRange(bucket, horizontalDim)
+            If pair Is Nothing OrElse pair.First Is Nothing OrElse pair.Second Is Nothing Then Return 0
+            Dim placed As New HashSet(Of String)(StringComparer.Ordinal)
+            Dim dt As DimensionTypeEnum = If(horizontalDim, DimensionTypeEnum.kHorizontalDimensionType, DimensionTypeEnum.kVerticalDimensionType)
+            Return AddLinearPairDimension(doc, sheet, v, slot, pair, dt, True, placed)
+        Catch
+        End Try
+        Return 0
+    End Function
+
+    Private Function FindOuterInnerPairByRange(bucket As CurveBucket, horizontalDim As Boolean) As CurvePair
+        Dim pair As New CurvePair()
+        If bucket Is Nothing Then Return pair
+
+        Dim outers As List(Of DrawingCurve) = If(horizontalDim, bucket.OuterVertical, bucket.OuterHorizontal)
+        Dim inners As List(Of DrawingCurve) = If(horizontalDim, bucket.InnerVertical, bucket.InnerHorizontal)
+        If outers Is Nothing OrElse inners Is Nothing OrElse outers.Count = 0 OrElse inners.Count = 0 Then Return pair
+
+        Dim bestGap As Double = Double.MaxValue
+        For Each o As DrawingCurve In outers
+            Dim oc As Double = GetCurveCenterCoordinate(o, horizontalDim)
+            For Each i As DrawingCurve In inners
+                Dim ic As Double = GetCurveCenterCoordinate(i, horizontalDim)
+                Dim gap As Double = Math.Abs(oc - ic)
+                If gap > 0.0001 AndAlso gap < bestGap Then
+                    bestGap = gap
+                    pair.First = o
+                    pair.Second = i
+                End If
+            Next
+        Next
+        Return pair
+    End Function
+
+    Private Function TryAddSlopeHeightByExtremums(doc As DrawingDocument, sheet As Sheet, v As DrawingView, slot As SlotRect) As Integer
+        Try
+            Dim bucket As CurveBucket = CollectViewCurves(v)
+            If bucket Is Nothing Then Return 0
+            Dim allCurves As New List(Of DrawingCurve)()
+            allCurves.AddRange(bucket.OuterHorizontal)
+            allCurves.AddRange(bucket.InnerHorizontal)
+            allCurves.AddRange(bucket.Sloped)
+            If allCurves.Count < 2 Then Return 0
+
+            Dim low As DrawingCurve = Nothing
+            Dim high As DrawingCurve = Nothing
+            Dim lowY As Double = Double.MaxValue
+            Dim highY As Double = Double.MinValue
+            For Each c As DrawingCurve In allCurves
+                Dim y As Double = GetCurveCenterCoordinate(c, False)
+                If y < lowY Then lowY = y : low = c
+                If y > highY Then highY = y : high = c
+            Next
+
+            If low Is Nothing OrElse high Is Nothing Then Return 0
+            Dim pair As New CurvePair()
+            pair.First = low
+            pair.Second = high
+            Dim placed As New HashSet(Of String)(StringComparer.Ordinal)
+            Return AddLinearPairDimension(doc, sheet, v, slot, pair, DimensionTypeEnum.kVerticalDimensionType, True, placed)
+        Catch
+        End Try
+        Return 0
+    End Function
+
+    Private Function TryAddSlopedProjectionDimension(doc As DrawingDocument, sheet As Sheet, v As DrawingView, slot As SlotRect) As Integer
+        Try
+            Dim bucket As CurveBucket = CollectViewCurves(v)
+            If bucket Is Nothing OrElse bucket.Sloped Is Nothing OrElse bucket.Sloped.Count = 0 Then Return 0
+            Dim minC As DrawingCurve = Nothing
+            Dim maxC As DrawingCurve = Nothing
+            Dim minX As Double = Double.MaxValue
+            Dim maxX As Double = Double.MinValue
+            For Each c As DrawingCurve In bucket.Sloped
+                Dim x As Double = GetCurveCenterCoordinate(c, True)
+                If x < minX Then minX = x : minC = c
+                If x > maxX Then maxX = x : maxC = c
+            Next
+            If minC Is Nothing OrElse maxC Is Nothing Then Return 0
+
+            Dim pair As New CurvePair()
+            pair.First = minC
+            pair.Second = maxC
+            Dim placed As New HashSet(Of String)(StringComparer.Ordinal)
+            Return AddLinearPairDimension(doc, sheet, v, slot, pair, DimensionTypeEnum.kHorizontalDimensionType, True, placed)
+        Catch
+        End Try
+        Return 0
+    End Function
+
     Private Function FindFeatureOffsets(bucket As CurveBucket, horizontalDim As Boolean) As List(Of CurvePair)
         Dim result As New List(Of CurvePair)()
         Dim pool As New List(Of DrawingCurve)()
@@ -2014,6 +2188,12 @@ Public Class AlbumBuilder
                 Return "Ширина канта ≈" & Math.Round(Math.Min(realWmm, realHmm) * 0.35, 0).ToString() & " мм"
             Case DimensionIntentId.Chamfer
                 Return "Фаска ≈" & Math.Round(Math.Min(realWmm, realHmm) * 0.08, 0).ToString() & " мм"
+            Case DimensionIntentId.StepHeight
+                Return "Высота ступени ≈" & Math.Round(realHmm * 0.22, 0).ToString() & " мм"
+            Case DimensionIntentId.ProfileDepth
+                Return "Глубина профиля ≈" & Math.Round(realWmm * 0.18, 0).ToString() & " мм"
+            Case DimensionIntentId.ProfileHeight
+                Return "Высота профиля ≈" & Math.Round(realHmm * 0.30, 0).ToString() & " мм"
             Case DimensionIntentId.SlopeHeightHigh
                 Return "Высота клина ≈" & Math.Round(realHmm, 0).ToString() & " мм"
             Case DimensionIntentId.SlopeHeightLow
@@ -2477,6 +2657,16 @@ Public Class AlbumBuilder
         Sloped
     End Enum
 
+    Public Enum DimensionArchetype
+        PlateSimple
+        LinearPlain
+        LinearProfiled
+        ProfiledStep
+        RadialSimple
+        RadialProfiled
+        SlopedDovetail
+    End Enum
+
     Public Enum ViewRole
         MainContour
         PlanContour
@@ -2597,6 +2787,7 @@ Public Class AlbumBuilder
 
     Public Class PartDescriptor
         Public Family As PartFamily
+        Public DimArchetype As DimensionArchetype
         Public IsLong As Boolean
         Public IsThin As Boolean
         Public HasDominantPlan As Boolean
@@ -2612,7 +2803,20 @@ Public Class AlbumBuilder
         Public HasSymmetricRadialBand As Boolean
         Public HasProfileBulge As Boolean
         Public HasStrongThicknessView As Boolean
+        Public HasRoundedDrip As Boolean
+        Public HasRebate As Boolean
+        Public HasDovetailEnd As Boolean
+        Public HasProfileShelf As Boolean
+        Public HasMultipleRadialBands As Boolean
         Public PreferredMainRole As ViewRole
+    End Class
+
+    Public Class FallbackRequest
+        Public Intent As DimensionIntentId
+        Public Role As ViewRole
+        Public View As DrawingView
+        Public Slot As SlotRect
+        Public Measure As ViewMeasure
     End Class
 
     Public Class RoleMap
