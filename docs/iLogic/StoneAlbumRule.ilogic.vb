@@ -1159,7 +1159,7 @@ Public Class AlbumBuilder
         Next
 
         If totalAdded = 0 Then
-            Dim forced As Integer = ForceVisibleFallbackDimensions(doc, sheet, placedViews, roleMap, plan, fallbackNoteKeys)
+            Dim forced As Integer = ForceVisibleFallbackDimensions(doc, sheet, placedViews, roleMap, plan)
             totalAdded += forced
             Debug.Print("ForceVisibleFallbackDimensions: added=" & forced.ToString())
         End If
@@ -1283,6 +1283,8 @@ Public Class AlbumBuilder
         If intent = DimensionIntentId.RadiusMain OrElse intent = DimensionIntentId.RadiusSecondary Then
             Dim byRadius As Integer = TryAddRadiusDimension(sheet, v)
             If byRadius > 0 Then Return byRadius
+            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, measure, noteKeys) Then Return 1
+            Return 0
         End If
 
         Dim addH As Boolean = (intent = DimensionIntentId.LipDepth OrElse intent = DimensionIntentId.RecessOffset OrElse intent = DimensionIntentId.EndCutLength OrElse intent = DimensionIntentId.EdgeBandWidth)
@@ -2251,7 +2253,7 @@ Public Class AlbumBuilder
 
             If IsRadiusIntent(intent) Then
                 px = v.Left + v.Width + Cm(doc, 1.6)
-                py = v.Top - v.Height * 0.35
+                py = v.Top + Cm(doc, 1.0)
             ElseIf IsHorizontalIntent(intent) Then
                 px = v.Left + v.Width * 0.5
                 If (RuntimeHelpers.GetHashCode(v) Mod 2) = 0 Then
@@ -2261,11 +2263,7 @@ Public Class AlbumBuilder
                 End If
             ElseIf IsVerticalIntent(intent) Then
                 py = v.Top - v.Height * 0.5
-                If (RuntimeHelpers.GetHashCode(v) Mod 2) = 0 Then
-                    px = v.Left + v.Width + Cm(doc, 1.5)
-                Else
-                    px = v.Left - Cm(doc, 1.5)
-                End If
+                px = v.Left + v.Width + Cm(doc, 1.5)
             End If
 
             px = Math.Max(minX + Cm(doc, 1.0), Math.Min(maxX - Cm(doc, 1.0), px))
@@ -2284,70 +2282,84 @@ Public Class AlbumBuilder
                                                     sheet As Sheet,
                                                     placedViews As Dictionary(Of ViewRole, DrawingView),
                                                     roleMap As RoleMap,
-                                                    plan As DimensionPlan,
-                                                    noteKeys As HashSet(Of String)) As Integer
+                                                    plan As DimensionPlan) As Integer
         If sheet Is Nothing OrElse placedViews Is Nothing Then Return 0
 
+        Dim noteKeys As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         Dim total As Integer = 0
-        Dim mainRole As ViewRole = ViewRole.MainContour
-        Dim auxRole As ViewRole = ViewRole.CrossProfile
+        Dim orderedRoles As New List(Of ViewRole)()
         If plan IsNot Nothing AndAlso plan.Intents IsNot Nothing Then
             For Each i As DimensionIntent In plan.Intents
-                If i Is Nothing OrElse i.PreferredRole = ViewRole.IsoReference Then Continue For
-                mainRole = ResolveExistingRole(i.PreferredRole, placedViews)
-                Exit For
-            Next
-            For Each i As DimensionIntent In plan.Intents
-                If i Is Nothing OrElse i.PreferredRole = ViewRole.IsoReference Then Continue For
+                If i Is Nothing Then Continue For
                 Dim r As ViewRole = ResolveExistingRole(i.PreferredRole, placedViews)
-                If r <> mainRole Then
-                    auxRole = r
+                If r = ViewRole.IsoReference Then Continue For
+                If Not orderedRoles.Contains(r) Then orderedRoles.Add(r)
+            Next
+        End If
+        For Each kvp As KeyValuePair(Of ViewRole, DrawingView) In placedViews
+            If kvp.Key = ViewRole.IsoReference Then Continue For
+            Dim r As ViewRole = ResolveExistingRole(kvp.Key, placedViews)
+            If Not orderedRoles.Contains(r) Then orderedRoles.Add(r)
+        Next
+
+        Dim firstRole As ViewRole = ViewRole.MainContour
+        Dim secondRole As ViewRole = ViewRole.MainContour
+        Dim firstView As DrawingView = Nothing
+        Dim secondView As DrawingView = Nothing
+
+        For Each role As ViewRole In orderedRoles
+            If Not placedViews.ContainsKey(role) Then Continue For
+            Dim v As DrawingView = placedViews(role)
+            If v Is Nothing Then Continue For
+            If firstView Is Nothing Then
+                firstView = v
+                firstRole = role
+            ElseIf secondView Is Nothing AndAlso RuntimeHelpers.GetHashCode(v) <> RuntimeHelpers.GetHashCode(firstView) Then
+                secondView = v
+                secondRole = role
+                Exit For
+            End If
+        Next
+
+        If firstView IsNot Nothing Then
+            Dim firstSlot As New SlotRect(firstView.Left, firstView.Left + firstView.Width, firstView.Top - firstView.Height, firstView.Top)
+            Dim firstMeasure As ViewMeasure = Nothing
+            If roleMap IsNot Nothing Then firstMeasure = roleMap.GetMeasure(firstRole)
+            If AddFallbackDimensionNotes(doc, sheet, firstView, firstSlot, DimensionIntentId.OverallLength, firstMeasure, noteKeys) Then
+                total += 1
+            ElseIf AddFallbackDimensionNotes(doc, sheet, firstView, firstSlot, DimensionIntentId.OverallWidth, firstMeasure, noteKeys) Then
+                total += 1
+            End If
+        End If
+
+        If secondView IsNot Nothing Then
+            Dim secondSlot As New SlotRect(secondView.Left, secondView.Left + secondView.Width, secondView.Top - secondView.Height, secondView.Top)
+            Dim secondMeasure As ViewMeasure = Nothing
+            If roleMap IsNot Nothing Then secondMeasure = roleMap.GetMeasure(secondRole)
+            Dim secondIntents As New List(Of DimensionIntentId)()
+            secondIntents.Add(DimensionIntentId.OverallThickness)
+            If secondRole = ViewRole.CrossProfile OrElse secondRole = ViewRole.ThicknessView OrElse secondRole = ViewRole.EndFace Then
+                secondIntents.Add(DimensionIntentId.ProfileHeight)
+            Else
+                secondIntents.Add(DimensionIntentId.RadiusMain)
+                secondIntents.Add(DimensionIntentId.ProfileHeight)
+            End If
+            For Each i As DimensionIntentId In secondIntents
+                If AddFallbackDimensionNotes(doc, sheet, secondView, secondSlot, i, secondMeasure, noteKeys) Then
+                    total += 1
                     Exit For
                 End If
             Next
         End If
 
-        Dim prioritized As New List(Of ViewRole)()
-        prioritized.Add(mainRole)
-        prioritized.Add(auxRole)
-        prioritized.Add(ViewRole.LongitudinalFacade)
-        prioritized.Add(ViewRole.PlanContour)
-        prioritized.Add(ViewRole.CrossProfile)
-        prioritized.Add(ViewRole.SlopeView)
-        prioritized.Add(ViewRole.ThicknessView)
-        prioritized.Add(ViewRole.EndFace)
+        If total < 2 AndAlso firstView IsNot Nothing Then
+            Dim firstSlot As New SlotRect(firstView.Left, firstView.Left + firstView.Width, firstView.Top - firstView.Height, firstView.Top)
+            Dim firstMeasure As ViewMeasure = Nothing
+            If roleMap IsNot Nothing Then firstMeasure = roleMap.GetMeasure(firstRole)
+            If AddFallbackDimensionNotes(doc, sheet, firstView, firstSlot, DimensionIntentId.OverallWidth, firstMeasure, noteKeys) Then total += 1
+            If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, firstView, firstSlot, DimensionIntentId.ProfileHeight, firstMeasure, noteKeys) Then total += 1
+        End If
 
-        Dim visited As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-        For Each role As ViewRole In prioritized
-            Dim r As ViewRole = ResolveExistingRole(role, placedViews)
-            Dim roleKey As String = r.ToString()
-            If visited.Contains(roleKey) Then Continue For
-            visited.Add(roleKey)
-            If Not placedViews.ContainsKey(r) Then Continue For
-            If r = ViewRole.IsoReference Then Continue For
-
-            Dim v As DrawingView = placedViews(r)
-            If v Is Nothing Then Continue For
-            Dim slot As New SlotRect(v.Left, v.Left + v.Width, v.Top - v.Height, v.Top)
-            Dim m As ViewMeasure = Nothing
-            If roleMap IsNot Nothing Then m = roleMap.GetMeasure(r)
-
-            If r = mainRole Then
-                If RectW(slot) >= RectH(slot) Then
-                    If AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallLength, m, noteKeys) Then total += 1
-                    If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallWidth, m, noteKeys) Then total += 1
-                Else
-                    If AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallHeight, m, noteKeys) Then total += 1
-                    If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallLength, m, noteKeys) Then total += 1
-                End If
-            Else
-                If AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallThickness, m, noteKeys) Then total += 1
-                If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.ProfileHeight, m, noteKeys) Then total += 1
-                If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.RadiusMain, m, noteKeys) Then total += 1
-            End If
-
-            If total >= 2 Then Exit For
-        Next
         Return total
     End Function
 
