@@ -869,6 +869,9 @@ Public Class AlbumBuilder
                 If profileAux Then plan.Score += 0.36 Else plan.Score -= 0.26
                 If profileMain Then plan.Score -= 0.24
                 If facadeAux Then plan.Score -= 0.22
+                If String.Equals(mainM.Key, "FRONT", StringComparison.OrdinalIgnoreCase) Then plan.Score += 0.01
+                If String.Equals(mainM.Key, "LEFT", StringComparison.OrdinalIgnoreCase) Then plan.Score += 0.008
+                If String.Equals(auxA.Key, "TOP", StringComparison.OrdinalIgnoreCase) Then plan.Score += 0.01
 
                 If auxA IsNot Nothing AndAlso Not String.Equals(auxA.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then
                     plan.Score += 0.08
@@ -903,10 +906,10 @@ Public Class AlbumBuilder
             Dim thinAux As Boolean = auxA.AspectRatio >= 6.0 AndAlso auxA.CurveCount <= 10
 
             If String.Equals(ptn.PatternName, "PLATE_A", StringComparison.OrdinalIgnoreCase) Then
-                If auxPlan Then plan.Score += 0.24
-                If thinMain Then plan.Score += 0.18
-                If mainPlan AndAlso thinAux Then plan.Score -= 0.12
-                If mainPlan Then plan.Score -= 0.1
+                If mainPlan Then plan.Score += 0.24 Else plan.Score -= 0.18
+                If thinMain Then plan.Score -= 0.22
+                If thinAux Then plan.Score += 0.16
+                If auxPlan Then plan.Score -= 0.08
                 If RectW(plan.MainSlot) > RectW(plan.Aux1Slot) Then plan.Score += 0.08
                 If RectH(plan.Aux2Slot) < RectH(plan.MainSlot) Then plan.Score += 0.05
             ElseIf String.Equals(ptn.PatternName, "PLATE_B", StringComparison.OrdinalIgnoreCase) Then
@@ -1033,8 +1036,12 @@ Public Class AlbumBuilder
         If detailedProfile Then
             If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, True, measure)
         ElseIf facadeLike Then
-            If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, False, True, measure)
-            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, False, measure)
+            If lightDim Then
+                If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, False, True, measure)
+            Else
+                If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, False, True, measure)
+                If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, False, measure)
+            End If
         Else
             If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, True, measure)
         End If
