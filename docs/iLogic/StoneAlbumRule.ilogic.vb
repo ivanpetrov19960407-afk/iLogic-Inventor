@@ -1,8 +1,11 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.18
+' StoneAlbumRule.ilogic.vb  –  v3.19
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
+' v3.19: add facade-left long-linear layout subtype,
+'        support left tall shaded facade + top profile + bottom-right iso,
+'        improve long profiled step placement and scoring
 ' v3.18: keep all opposite views as candidates until final scoring,
 '        fix wrong-side selection for steps/profiled parts,
 '        add second plate/block layout variant,
@@ -522,6 +525,19 @@ Public Class AlbumBuilder
             pB.Aux2Slot = New SlotRect(rightL, safe.R, safe.B, safe.B + h * 0.50)
             result.Add(pB)
 
+            Dim facadeMainR As Double = safe.L + w * 0.27
+            Dim facadeAux1L As Double = safe.L + w * 0.34
+            Dim facadeAux2L As Double = safe.L + w * 0.45
+            Dim rightProtect As Double = Math.Max(gap * 0.5, Cm(doc, 2.0))
+
+            Dim pC As New LayoutPattern()
+            pC.PatternName = "LONG_FACADE_LEFT"
+            pC.Archetype = LayoutArchetype.LongLinear
+            pC.MainSlot = New SlotRect(safe.L, facadeMainR, safe.B, safe.T)
+            pC.Aux1Slot = New SlotRect(facadeAux1L, safe.R - rightProtect, safe.B + h * 0.56, safe.T)
+            pC.Aux2Slot = New SlotRect(facadeAux2L, safe.R, safe.B, safe.B + h * 0.48)
+            result.Add(pC)
+
         Else
             Dim leftW As Double = Math.Max(Cm(doc, 80.0), w * 0.34)
 
@@ -665,6 +681,45 @@ Public Class AlbumBuilder
         Return m.AspectRatio >= 4.2
     End Function
 
+    Private Function IsFacadeLikeLongMeasure(m As ViewMeasure) As Boolean
+        If m Is Nothing Then Return False
+        If String.Equals(m.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then Return False
+        If m.CurveCount <= 2 Then Return False
+        If Not IsLongitudinalMeasure(m) Then Return False
+        If m.CurveCount <= 11 AndAlso m.AspectRatio >= 4.4 Then Return True
+        If m.CurveCount <= 14 AndAlso m.AspectRatio >= 5.2 Then Return True
+        Return False
+    End Function
+
+    Private Function IsDetailedProfileMeasure(m As ViewMeasure) As Boolean
+        If m Is Nothing Then Return False
+        If String.Equals(m.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then Return False
+        If String.Equals(m.Key, "TOP", StringComparison.OrdinalIgnoreCase) AndAlso m.CurveCount <= 6 Then Return False
+        If IsFacadeLikeLongMeasure(m) AndAlso m.CurveCount <= 10 Then Return False
+        If m.CurveCount >= 12 Then Return True
+        If m.CurveCount >= 8 AndAlso m.AspectRatio <= 6.0 Then Return True
+        If m.AspectRatio <= 4.6 AndAlso m.CurveCount >= 6 Then Return True
+        Return False
+    End Function
+
+    Private Function WouldPreferVerticalPlacement(slot As SlotRect, m As ViewMeasure) As Boolean
+        If slot Is Nothing OrElse m Is Nothing Then Return False
+        Dim sw As Double = RectW(slot)
+        Dim sh As Double = RectH(slot)
+        If sw <= 0 OrElse sh <= 0 Then Return False
+
+        Dim fit0 As FitResult = BuildFitResult(sw, sh, m.UnitW, m.UnitH, ORTHO_SCALE_MARGIN, False)
+        Dim fit90 As FitResult = BuildFitResult(sw, sh, m.UnitW, m.UnitH, ORTHO_SCALE_MARGIN, True)
+        If fit90 Is Nothing Then Return False
+        If fit0 Is Nothing Then Return True
+
+        Dim slotTall As Boolean = sh > sw * 1.08
+        Dim fit90Tall As Boolean = fit90.ProjectedH >= fit90.ProjectedW * 1.02
+        If fit90.Scale >= fit0.Scale * 1.04 AndAlso slotTall Then Return True
+        If fit90.Scale > fit0.Scale AndAlso fit90Tall AndAlso slotTall Then Return True
+        Return False
+    End Function
+
     Private Function IsPlanLikeMeasure(m As ViewMeasure) As Boolean
         If m Is Nothing Then Return False
         If String.Equals(m.Key, "TOP", StringComparison.OrdinalIgnoreCase) Then Return True
@@ -801,15 +856,47 @@ Public Class AlbumBuilder
         If RectW(plan.Aux2Slot) > RectW(plan.MainSlot) OrElse RectH(plan.Aux2Slot) > RectH(plan.MainSlot) Then plan.Score -= 0.12
 
         If archetype = LayoutArchetype.LongLinear Then
-            If mainLong Then plan.Score += 0.28 Else plan.Score -= 0.18
-            If auxProfile Then plan.Score += 0.18
-            If mainLong AndAlso auxLong Then plan.Score -= 0.12
-            If RectW(plan.MainSlot) > RectW(plan.Aux1Slot) Then plan.Score += 0.09
-            If String.Equals(ptn.PatternName, "LONG_A", StringComparison.OrdinalIgnoreCase) Then
-                If RectW(plan.Aux2Slot) < RectW(plan.Aux1Slot) Then plan.Score += 0.03
+            If String.Equals(ptn.PatternName, "LONG_FACADE_LEFT", StringComparison.OrdinalIgnoreCase) Then
+                Dim facadeMain As Boolean = IsFacadeLikeLongMeasure(mainM)
+                Dim facadeAux As Boolean = IsFacadeLikeLongMeasure(auxA)
+                Dim profileMain As Boolean = IsDetailedProfileMeasure(mainM)
+                Dim profileAux As Boolean = IsDetailedProfileMeasure(auxA)
+                Dim mainVertical As Boolean = plan.MainFit.Rotate90
+                Dim preferVertical As Boolean = WouldPreferVerticalPlacement(plan.MainSlot, mainM)
+                Dim similar2D As Boolean = Math.Abs(mainM.AspectRatio - auxA.AspectRatio) < 0.35 AndAlso Math.Abs(mainM.CurveCount - auxA.CurveCount) <= 2
+
+                If facadeMain Then plan.Score += 0.42 Else plan.Score -= 0.34
+                If profileAux Then plan.Score += 0.36 Else plan.Score -= 0.26
+                If profileMain Then plan.Score -= 0.24
+                If facadeAux Then plan.Score -= 0.22
+
+                If auxA IsNot Nothing AndAlso Not String.Equals(auxA.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then
+                    plan.Score += 0.08
+                End If
+                If String.Equals(isoM.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then plan.Score += 0.1
+
+                If mainVertical Then plan.Score += 0.11
+                If preferVertical AndAlso plan.MainFit.Rotate90 Then plan.Score += 0.15
+                If preferVertical AndAlso (Not plan.MainFit.Rotate90) Then plan.Score -= 0.14
+
+                If RectH(plan.MainSlot) > RectW(plan.MainSlot) * 1.4 Then plan.Score += 0.1
+                If RectW(plan.Aux1Slot) > RectW(plan.MainSlot) * 1.2 Then plan.Score += 0.08
+                If RectH(plan.Aux1Slot) >= RectH(plan.Aux2Slot) Then plan.Score += 0.05
+
+                If similar2D Then plan.Score -= 0.16
+                If mainLong AndAlso auxLong Then plan.Score -= 0.12
+                If auxA.CurveCount <= 5 Then plan.Score -= 0.1
+            Else
+                If mainLong Then plan.Score += 0.28 Else plan.Score -= 0.18
+                If auxProfile Then plan.Score += 0.18
+                If mainLong AndAlso auxLong Then plan.Score -= 0.12
+                If RectW(plan.MainSlot) > RectW(plan.Aux1Slot) Then plan.Score += 0.09
+                If String.Equals(ptn.PatternName, "LONG_A", StringComparison.OrdinalIgnoreCase) Then
+                    If RectW(plan.Aux2Slot) < RectW(plan.Aux1Slot) Then plan.Score += 0.03
+                End If
+                If mainProfile AndAlso (Not mainLong) Then plan.Score -= 0.2
+                If mainM.AspectRatio < 2.8 AndAlso auxA.AspectRatio < 2.8 Then plan.Score -= 0.12
             End If
-            If mainProfile AndAlso (Not mainLong) Then plan.Score -= 0.2
-            If mainM.AspectRatio < 2.8 AndAlso auxA.AspectRatio < 2.8 Then plan.Score -= 0.12
 
         ElseIf archetype = LayoutArchetype.PlateBlock Then
             Dim thinMain As Boolean = mainM.AspectRatio >= 6.0 AndAlso mainM.CurveCount <= 10
@@ -926,12 +1013,38 @@ Public Class AlbumBuilder
 
         If String.Equals(measure.Key, "ISO", StringComparison.OrdinalIgnoreCase) AndAlso (Not DIMENSIONS_ON_MAIN_ISO) Then Return
 
+        Dim facadeLike As Boolean = IsFacadeLikeLongMeasure(measure)
+        Dim detailedProfile As Boolean = IsDetailedProfileMeasure(measure)
+        Dim lightDim As Boolean = ShouldPreferLightDimensioning(measure)
+
+        Dim addHorizontal As Boolean = True
+        Dim addVertical As Boolean = True
+        If lightDim Then
+            addHorizontal = False
+            addVertical = True
+        ElseIf detailedProfile Then
+            addHorizontal = True
+            addVertical = True
+        End If
+
         Dim added As Integer = 0
-        added += TryAddTrueDimensions(doc, sheet, v, slot, True, True)
-        If added < 2 Then
-            AddFallbackDimensionNotes(doc, sheet, v, slot, True, True, measure)
+        added += TryAddTrueDimensions(doc, sheet, v, slot, addHorizontal, addVertical)
+
+        If detailedProfile Then
+            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, True, measure)
+        ElseIf facadeLike Then
+            If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, False, True, measure)
+            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, False, measure)
+        Else
+            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, True, True, measure)
         End If
     End Sub
+
+    Private Function ShouldPreferLightDimensioning(m As ViewMeasure) As Boolean
+        If m Is Nothing Then Return False
+        If IsFacadeLikeLongMeasure(m) AndAlso (Not IsDetailedProfileMeasure(m)) Then Return True
+        Return False
+    End Function
 
     Private Function TryAddTrueDimensions(doc As DrawingDocument, sheet As Sheet,
                                           v As DrawingView, slot As SlotRect,
