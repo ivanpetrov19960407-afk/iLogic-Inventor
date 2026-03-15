@@ -1046,7 +1046,7 @@ Public Class AlbumBuilder
             If placedViews.ContainsKey(targetRole) Then v = placedViews(targetRole)
             If v Is Nothing Then Continue For
 
-            Dim slot As SlotRect = ResolveSlotByRole(placedViews, targetRole)
+            Dim slot As SlotRect = New SlotRect(v.Left, v.Left + v.Width, v.Top - v.Height, v.Top)
             Dim viewKey As String = targetRole.ToString()
             If IsOverallIntent(intent.IntentId) Then
                 If GetCounter(viewOverallCount, viewKey) >= 3 Then Continue For
