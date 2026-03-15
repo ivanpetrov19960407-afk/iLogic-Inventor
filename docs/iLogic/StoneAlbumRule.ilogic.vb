@@ -1,11 +1,12 @@
 ' ================================================================
-' StoneAlbumRule.ilogic.vb  –  v3.16
+' StoneAlbumRule.ilogic.vb  –  v3.17
 ' Архитектура точно повторяет рабочий VBA RKM_IdwAlbum.bas
 ' Источник: vba-inventor / RKM_IdwAlbum.bas, RKM_FrameBorder.bas,
 '           RKM_TitleBlockPrompted.bas, RKM_Excel.bas
-' v3.16: sample-like standard layout: left profile + right longitudinal + large iso,
-'        captions enabled for views, dimensions only on small 2D views (not on iso),
-'        prefer informative front/profile side for steps and profiled parts
+' v3.17: sample-driven multi-layout selection,
+'        support radial / long-linear / plate-block layouts,
+'        captions enabled for views, dimensions on informative 2D views,
+'        choose more informative side for profiled parts
 ' v3.14: smart auxiliary view selection from Front/Top/Right,
 '        disable view notes by default, remove shrink loop from PlaceViewInSlot
 ' v3.13: restore border re-edit (removed early return in EnsureBorder),
@@ -428,32 +429,64 @@ Public Class AlbumBuilder
         Dim preferredFrontBack As ViewMeasure = PickPreferredOppositeView(mFront, mBack)
         Dim preferredLeftRight As ViewMeasure = PickPreferredOppositeView(mLeft, mRight)
         Dim auxMeasures As List(Of ViewMeasure) = BuildPreferredAuxMeasures(mFront, mBack, mTop, mLeft, mRight)
+        Dim archetype As LayoutArchetype = DetectLayoutArchetype(mFront, mBack, mTop, mLeft, mRight)
 
-        If auxMeasures.Count < 2 Then
-            Debug.Print("WARN: не удалось измерить два вспомогательных вида")
+        Dim twoD As New List(Of ViewMeasure)()
+        For Each m As ViewMeasure In auxMeasures
+            If m Is Nothing Then Continue For
+            If String.Equals(m.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then Continue For
+            Dim exists As Boolean = False
+            For Each x As ViewMeasure In twoD
+                If x Is m Then exists = True : Exit For
+                If Not String.IsNullOrWhiteSpace(x.Key) AndAlso String.Equals(x.Key, m.Key, StringComparison.OrdinalIgnoreCase) Then exists = True : Exit For
+            Next
+            If Not exists Then twoD.Add(m)
+        Next
+
+        Dim mainM As ViewMeasure = SelectMainMeasureForArchetype(archetype, twoD, preferredFrontBack, preferredLeftRight, mTop)
+        If mainM Is Nothing Then
+            If twoD.Count > 0 Then mainM = twoD(0)
+        End If
+        If mainM Is Nothing Then
+            Debug.Print("WARN: не удалось выбрать главный 2D вид")
             Return False
         End If
 
-        Dim pairs As List(Of AuxPair) = BuildAuxPairs(auxMeasures)
-        Dim patterns As List(Of LayoutPattern) = BuildLayoutPatterns(doc, safe, gap)
+        Dim auxCandidates As New List(Of ViewMeasure)()
+        For Each m As ViewMeasure In twoD
+            If m IsNot Nothing AndAlso (Not Object.ReferenceEquals(m, mainM)) Then auxCandidates.Add(m)
+        Next
+
+        If auxCandidates.Count = 0 Then
+            Dim all2d As New List(Of ViewMeasure)()
+            If mFront IsNot Nothing Then all2d.Add(mFront)
+            If mBack IsNot Nothing Then all2d.Add(mBack)
+            If mTop IsNot Nothing Then all2d.Add(mTop)
+            If mLeft IsNot Nothing Then all2d.Add(mLeft)
+            If mRight IsNot Nothing Then all2d.Add(mRight)
+            For Each m As ViewMeasure In all2d
+                If m Is Nothing Then Continue For
+                If Object.ReferenceEquals(m, mainM) Then Continue For
+                Dim exists As Boolean = False
+                For Each x As ViewMeasure In auxCandidates
+                    If String.Equals(x.Key, m.Key, StringComparison.OrdinalIgnoreCase) Then exists = True : Exit For
+                Next
+                If Not exists Then auxCandidates.Add(m)
+            Next
+        End If
+
+        If auxCandidates.Count = 0 Then
+            Debug.Print("WARN: не удалось выбрать второй информативный 2D вид")
+            Return False
+        End If
+
+        Dim patterns As List(Of LayoutPattern) = BuildLayoutPatternsByArchetype(doc, safe, gap, archetype)
         Dim best As LayoutPlan = Nothing
 
         For Each ptn As LayoutPattern In patterns
-            For Each pair As AuxPair In pairs
-                Dim candidate As LayoutPlan = EvaluatePlanFlexible(ptn, mIso, pair.A, pair.B)
+            For Each aux1 As ViewMeasure In auxCandidates
+                Dim candidate As LayoutPlan = EvaluatePlanFlexible(ptn, archetype, mainM, aux1, mIso)
                 If candidate Is Nothing Then Continue For
-
-                If preferredFrontBack IsNot Nothing Then
-                    If candidate.Aux1Measure Is preferredFrontBack OrElse candidate.Aux2Measure Is preferredFrontBack Then
-                        candidate.Score += 0.02
-                    End If
-                End If
-                If preferredLeftRight IsNot Nothing Then
-                    If candidate.Aux1Measure Is preferredLeftRight OrElse candidate.Aux2Measure Is preferredLeftRight Then
-                        candidate.Score += 0.02
-                    End If
-                End If
-
                 If best Is Nothing OrElse candidate.Score > best.Score Then
                     best = candidate
                 End If
@@ -469,53 +502,85 @@ Public Class AlbumBuilder
         If vMain Is Nothing Then Return False
 
         Dim vAux1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.Aux1Measure, best.Aux1Fit, best.Aux1Slot)
-        Dim vAux2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.Aux2Measure, best.Aux2Fit, best.Aux2Slot)
+        If vAux1 Is Nothing Then
+            Debug.Print("WARN: не удалось разместить второй 2D вид")
+            Return False
+        End If
 
-        If vAux1 Is Nothing OrElse vAux2 Is Nothing Then
-            Debug.Print("WARN: не удалось разместить все вспомогательные виды")
+        Dim vAux2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.Aux2Measure, best.Aux2Fit, best.Aux2Slot)
+        If vAux2 Is Nothing Then
+            Debug.Print("WARN: не удалось разместить изометрический вид")
             Return False
         End If
 
         If ADD_VIEW_NOTES Then
-            AddViewAnnotations(doc, sheet, vMain, best.MainSlot, best.MainMeasure, True)
-            AddViewAnnotations(doc, sheet, vAux1, best.Aux1Slot, best.Aux1Measure, False)
-            AddViewAnnotations(doc, sheet, vAux2, best.Aux2Slot, best.Aux2Measure, False)
+            AddViewAnnotations(doc, sheet, vMain, best.MainSlot, best.MainMeasure)
+            AddViewAnnotations(doc, sheet, vAux1, best.Aux1Slot, best.Aux1Measure)
+            AddViewAnnotations(doc, sheet, vAux2, best.Aux2Slot, best.Aux2Measure)
         End If
 
         Return True
     End Function
 
-    Private Function BuildLayoutPatterns(doc As DrawingDocument, safe As SlotRect, gap As Double) As List(Of LayoutPattern)
+    Private Function BuildLayoutPatternsByArchetype(doc As DrawingDocument, safe As SlotRect, gap As Double, archetype As LayoutArchetype) As List(Of LayoutPattern)
         Dim result As New List(Of LayoutPattern)()
         Dim w As Double = RectW(safe)
         Dim h As Double = RectH(safe)
         If w <= gap * 4 OrElse h <= gap * 4 Then Return result
 
-        Dim auxBand As Double = Math.Max(h * 0.26, Cm(doc, 34.0))
-        auxBand = Math.Min(auxBand, h * 0.34)
-        Dim auxW As Double = Math.Max((w - gap * 3.0) / 2.0, Cm(doc, 45.0))
+        If archetype = LayoutArchetype.RadialSegment Then
+            Dim leftW As Double = Math.Max(Cm(doc, 85.0), w * 0.36)
+            Dim topH As Double = Math.Max(Cm(doc, 52.0), h * 0.52)
 
-        ' Вариант B (низкий риск): большой изометрический вид + 2 маленьких ортогональных сверху.
-        Dim pA As New LayoutPattern()
-        pA.MainSlot = New SlotRect(safe.L, safe.R, safe.B, safe.T - auxBand - gap)
-        pA.Aux1Slot = New SlotRect(safe.L, safe.L + auxW, safe.T - auxBand, safe.T)
-        pA.Aux2Slot = New SlotRect(safe.R - auxW, safe.R, safe.T - auxBand, safe.T)
-        pA.IsoSlot = New SlotRect(0, 0, 0, 0)
-        result.Add(pA)
+            Dim pA As New LayoutPattern()
+            pA.MainSlot = New SlotRect(safe.L + leftW + gap, safe.R, safe.B + h * 0.30, safe.T)
+            pA.Aux1Slot = New SlotRect(safe.L, safe.L + leftW, safe.B, safe.B + topH - gap)
+            pA.Aux2Slot = New SlotRect(safe.L, safe.L + leftW, safe.B + topH, safe.T)
+            result.Add(pA)
 
-        ' Запасной вариант: справа вертикальный столбец с двумя малыми видами.
-        Dim sideCol As Double = Math.Min(Math.Max(w * 0.26, Cm(doc, 45.0)), w * 0.34)
-        Dim pB As New LayoutPattern()
-        pB.MainSlot = New SlotRect(safe.L, safe.R - sideCol - gap, safe.B, safe.T)
-        pB.Aux1Slot = New SlotRect(safe.R - sideCol, safe.R, safe.B + (h + gap) / 2.0, safe.T)
-        pB.Aux2Slot = New SlotRect(safe.R - sideCol, safe.R, safe.B, safe.B + (h - gap) / 2.0)
-        pB.IsoSlot = New SlotRect(0, 0, 0, 0)
-        result.Add(pB)
+            Dim pB As New LayoutPattern()
+            pB.MainSlot = New SlotRect(safe.L + leftW + gap, safe.R, safe.B + h * 0.25, safe.T)
+            pB.Aux1Slot = New SlotRect(safe.L, safe.L + leftW, safe.B, safe.B + h * 0.45)
+            pB.Aux2Slot = New SlotRect(safe.L, safe.L + leftW, safe.B + h * 0.45 + gap, safe.T)
+            result.Add(pB)
+
+        ElseIf archetype = LayoutArchetype.LongLinear Then
+            Dim leftW As Double = Math.Max(Cm(doc, 75.0), w * 0.54)
+            Dim rightW As Double = w - leftW - gap
+
+            Dim pA As New LayoutPattern()
+            pA.MainSlot = New SlotRect(safe.L, safe.L + leftW, safe.B, safe.T)
+            pA.Aux1Slot = New SlotRect(safe.L + leftW + gap, safe.R, safe.B + h * 0.48, safe.T)
+            pA.Aux2Slot = New SlotRect(safe.L + leftW + gap, safe.R, safe.B, safe.B + h * 0.45)
+            result.Add(pA)
+
+            Dim pB As New LayoutPattern()
+            pB.MainSlot = New SlotRect(safe.L, safe.R - rightW - gap, safe.B, safe.T)
+            pB.Aux1Slot = New SlotRect(safe.R - rightW, safe.R, safe.B + h * 0.52, safe.T)
+            pB.Aux2Slot = New SlotRect(safe.R - rightW, safe.R, safe.B, safe.B + h * 0.48)
+            result.Add(pB)
+
+        Else
+            Dim leftW As Double = Math.Max(Cm(doc, 88.0), w * 0.58)
+            Dim topH As Double = Math.Max(Cm(doc, 46.0), h * 0.48)
+
+            Dim pA As New LayoutPattern()
+            pA.MainSlot = New SlotRect(safe.L, safe.L + leftW, safe.B + h * 0.42, safe.T)
+            pA.Aux1Slot = New SlotRect(safe.L + leftW + gap, safe.R, safe.B + h * 0.42, safe.T)
+            pA.Aux2Slot = New SlotRect(safe.L, safe.L + leftW, safe.B, safe.B + h * 0.38)
+            result.Add(pA)
+
+            Dim pB As New LayoutPattern()
+            pB.MainSlot = New SlotRect(safe.L, safe.L + leftW, safe.B + topH, safe.T)
+            pB.Aux1Slot = New SlotRect(safe.L + leftW + gap, safe.R, safe.B + topH, safe.T)
+            pB.Aux2Slot = New SlotRect(safe.L, safe.L + leftW, safe.B, safe.B + topH - gap)
+            result.Add(pB)
+        End If
 
         For Each p As LayoutPattern In result
-            p.MainSlot = InsetRect(p.MainSlot, gap * 0.25)
-            p.Aux1Slot = InsetRect(p.Aux1Slot, gap * 0.25)
-            p.Aux2Slot = InsetRect(p.Aux2Slot, gap * 0.25)
+            p.MainSlot = InsetRect(p.MainSlot, gap * 0.22)
+            p.Aux1Slot = InsetRect(p.Aux1Slot, gap * 0.22)
+            p.Aux2Slot = InsetRect(p.Aux2Slot, gap * 0.22)
         Next
         Return result
     End Function
@@ -574,102 +639,160 @@ Public Class AlbumBuilder
     Private Function IsProfileLikeMeasure(m As ViewMeasure) As Boolean
         If m Is Nothing Then Return False
         If String.Equals(m.Key, "TOP", StringComparison.OrdinalIgnoreCase) Then Return False
-
-        If m.CurveCount >= 14 Then Return True
-        If m.CurveCount >= 9 AndAlso m.AspectRatio <= 5.5 Then Return True
-        If m.AspectRatio <= 3.2 Then Return True
-
+        If m.CurveCount >= 12 Then Return True
+        If m.CurveCount >= 8 AndAlso m.AspectRatio <= 6.0 Then Return True
+        If m.AspectRatio <= 3.4 AndAlso m.CurveCount >= 5 Then Return True
         Return False
     End Function
 
     Private Function IsLongitudinalMeasure(m As ViewMeasure) As Boolean
         If m Is Nothing Then Return False
-        Return m.AspectRatio >= 4.0
+        Return m.AspectRatio >= 4.2
     End Function
 
-    Private Function EvaluatePlanFlexible(ptn As LayoutPattern,
-                                          mainM As ViewMeasure,
-                                          auxA As ViewMeasure,
-                                          auxB As ViewMeasure) As LayoutPlan
-        Dim best As LayoutPlan = Nothing
+    Private Function IsPlanLikeMeasure(m As ViewMeasure) As Boolean
+        If m Is Nothing Then Return False
+        If String.Equals(m.Key, "TOP", StringComparison.OrdinalIgnoreCase) Then Return True
+        Dim area As Double = m.UnitW * m.UnitH
+        If area <= 0 Then Return False
+        If m.AspectRatio <= 3.8 AndAlso m.CurveCount <= 18 Then Return True
+        If area >= 1200 AndAlso m.AspectRatio <= 5.5 Then Return True
+        Return False
+    End Function
 
-        For pass As Integer = 0 To 1
-            Dim a1 As ViewMeasure = If(pass = 0, auxA, auxB)
-            Dim a2 As ViewMeasure = If(pass = 0, auxB, auxA)
+    Private Function DetectLayoutArchetype(mFront As ViewMeasure,
+                                           mBack As ViewMeasure,
+                                           mTop As ViewMeasure,
+                                           mLeft As ViewMeasure,
+                                           mRight As ViewMeasure) As LayoutArchetype
+        Dim bestFrontBack As ViewMeasure = PickPreferredOppositeView(mFront, mBack)
+        Dim bestLeftRight As ViewMeasure = PickPreferredOppositeView(mLeft, mRight)
+        Dim allM As New List(Of ViewMeasure)()
+        If bestFrontBack IsNot Nothing Then allM.Add(bestFrontBack)
+        If mTop IsNot Nothing Then allM.Add(mTop)
+        If bestLeftRight IsNot Nothing Then allM.Add(bestLeftRight)
 
-            Dim plan As New LayoutPlan()
-            plan.MainSlot = ptn.MainSlot
-            plan.Aux1Slot = ptn.Aux1Slot
-            plan.Aux2Slot = ptn.Aux2Slot
-            plan.IsoSlot = ptn.IsoSlot
+        Dim hasVeryLong As Boolean = False
+        Dim hasRadial As Boolean = False
+        For Each m As ViewMeasure In allM
+            If m Is Nothing Then Continue For
+            If IsLongitudinalMeasure(m) AndAlso m.AspectRatio >= 5.2 Then hasVeryLong = True
+            If m.CurveCount >= 16 AndAlso m.AspectRatio <= 4.8 Then hasRadial = True
+            If IsPlanLikeMeasure(m) AndAlso m.CurveCount >= 14 AndAlso m.AspectRatio <= 4.0 Then hasRadial = True
+        Next
 
-            plan.MainMeasure = mainM
-            plan.Aux1Measure = a1
-            plan.Aux2Measure = a2
+        If hasRadial AndAlso (Not hasVeryLong) Then Return LayoutArchetype.RadialSegment
+        If hasVeryLong Then Return LayoutArchetype.LongLinear
+        Return LayoutArchetype.PlateBlock
+    End Function
 
-            plan.MainFit = ScaleToFit(plan.MainSlot, mainM, ISO_SCALE_MARGIN)
-            plan.Aux1Fit = ScaleToFit(plan.Aux1Slot, a1, ORTHO_SCALE_MARGIN)
-            plan.Aux2Fit = ScaleToFit(plan.Aux2Slot, a2, ORTHO_SCALE_MARGIN)
+    Private Function SelectMainMeasureForArchetype(archetype As LayoutArchetype,
+                                                    measures As List(Of ViewMeasure),
+                                                    preferredFrontBack As ViewMeasure,
+                                                    preferredLeftRight As ViewMeasure,
+                                                    mTop As ViewMeasure) As ViewMeasure
+        Dim best As ViewMeasure = Nothing
+        Dim bestScore As Double = -1000000.0
 
-            If plan.MainFit Is Nothing OrElse plan.MainFit.Scale <= 0 Then Continue For
-            If plan.Aux1Fit Is Nothing OrElse plan.Aux1Fit.Scale <= 0 Then Continue For
-            If plan.Aux2Fit Is Nothing OrElse plan.Aux2Fit.Scale <= 0 Then Continue For
+        For Each m As ViewMeasure In measures
+            If m Is Nothing Then Continue For
+            Dim sc As Double = 0
+            sc += m.CurveCount * 0.06
 
-            Dim mainArea As Double = plan.MainFit.ProjectedW * plan.MainFit.ProjectedH
-            Dim aux1Area As Double = plan.Aux1Fit.ProjectedW * plan.Aux1Fit.ProjectedH
-            Dim aux2Area As Double = plan.Aux2Fit.ProjectedW * plan.Aux2Fit.ProjectedH
-            Dim auxArea As Double = aux1Area + aux2Area
-
-            Dim workArea As Double = RectW(plan.MainSlot) * RectH(plan.MainSlot) +
-                                     RectW(plan.Aux1Slot) * RectH(plan.Aux1Slot) +
-                                     RectW(plan.Aux2Slot) * RectH(plan.Aux2Slot)
-            If workArea <= 0 Then Continue For
-
-            Dim fill As Double = (mainArea + auxArea) / workArea
-            Dim mainDominance As Double = mainArea / Math.Max(0.0001, mainArea + auxArea)
-            Dim auxBalance As Double = Math.Min(aux1Area, aux2Area) / Math.Max(0.0001, Math.Max(aux1Area, aux2Area))
-
-            plan.Score = fill * 0.35 + mainDominance * 0.45 + auxBalance * 0.2
-            If mainDominance < 0.45 Then plan.Score -= 0.3
-
-            Dim aux1Profile As Boolean = IsProfileLikeMeasure(a1)
-            Dim aux2Profile As Boolean = IsProfileLikeMeasure(a2)
-            Dim aux1Long As Boolean = IsLongitudinalMeasure(a1)
-            Dim aux2Long As Boolean = IsLongitudinalMeasure(a2)
-            Dim aux1Top As Boolean = String.Equals(a1.Key, "TOP", StringComparison.OrdinalIgnoreCase)
-            Dim aux2Top As Boolean = String.Equals(a2.Key, "TOP", StringComparison.OrdinalIgnoreCase)
-
-            If aux1Profile Then plan.Score += 0.12
-            If aux2Long Then plan.Score += 0.1
-
-            Dim mixedPair As Boolean = False
-            If aux1Profile AndAlso (aux2Long OrElse aux2Top) Then mixedPair = True
-            If aux2Profile AndAlso (aux1Long OrElse aux1Top) Then mixedPair = True
-            If mixedPair Then plan.Score += 0.08
-
-            If aux1Long AndAlso aux2Long AndAlso (Not aux1Profile) AndAlso (Not aux2Profile) Then
-                plan.Score -= 0.08
+            If archetype = LayoutArchetype.RadialSegment Then
+                If IsPlanLikeMeasure(m) Then sc += 2.2
+                If m.CurveCount >= 14 Then sc += 1.2
+                If IsLongitudinalMeasure(m) Then sc -= 1.4
+                If IsProfileLikeMeasure(m) Then sc -= 0.35
+            ElseIf archetype = LayoutArchetype.LongLinear Then
+                If IsLongitudinalMeasure(m) Then sc += 2.6
+                If IsProfileLikeMeasure(m) Then sc -= 0.6
+                If String.Equals(m.Key, "TOP", StringComparison.OrdinalIgnoreCase) Then sc -= 0.3
+            Else
+                If IsPlanLikeMeasure(m) Then sc += 2.4
+                If IsLongitudinalMeasure(m) Then sc -= 0.5
             End If
 
-            If (aux1Top AndAlso aux2Top) Then
-                plan.Score -= 0.03
-            End If
+            If preferredFrontBack Is m Then sc += 0.2
+            If preferredLeftRight Is m Then sc += 0.2
+            If mTop Is m Then sc += 0.25
 
-            Dim similarMeaning As Boolean = False
-            If aux1Profile AndAlso aux2Profile Then similarMeaning = True
-            If aux1Long AndAlso aux2Long Then similarMeaning = True
-            If similarMeaning Then plan.Score -= 0.04
-
-            If Math.Abs(a1.AspectRatio - a2.AspectRatio) < 0.35 AndAlso (Not mixedPair) Then
-                plan.Score -= 0.02
-            End If
-
-            If best Is Nothing OrElse plan.Score > best.Score Then
-                best = plan
+            If best Is Nothing OrElse sc > bestScore Then
+                best = m
+                bestScore = sc
             End If
         Next
 
         Return best
+    End Function
+
+    Private Function EvaluatePlanFlexible(ptn As LayoutPattern,
+                                          archetype As LayoutArchetype,
+                                          mainM As ViewMeasure,
+                                          auxA As ViewMeasure,
+                                          isoM As ViewMeasure) As LayoutPlan
+        If ptn Is Nothing OrElse mainM Is Nothing OrElse auxA Is Nothing OrElse isoM Is Nothing Then Return Nothing
+
+        Dim plan As New LayoutPlan()
+        plan.MainSlot = ptn.MainSlot
+        plan.Aux1Slot = ptn.Aux1Slot
+        plan.Aux2Slot = ptn.Aux2Slot
+        plan.MainMeasure = mainM
+        plan.Aux1Measure = auxA
+        plan.Aux2Measure = isoM
+
+        plan.MainFit = ScaleToFit(plan.MainSlot, mainM, ORTHO_SCALE_MARGIN)
+        plan.Aux1Fit = ScaleToFit(plan.Aux1Slot, auxA, ORTHO_SCALE_MARGIN)
+        plan.Aux2Fit = ScaleToFit(plan.Aux2Slot, isoM, ISO_SCALE_MARGIN)
+
+        If plan.MainFit Is Nothing OrElse plan.MainFit.Scale <= 0 Then Return Nothing
+        If plan.Aux1Fit Is Nothing OrElse plan.Aux1Fit.Scale <= 0 Then Return Nothing
+        If plan.Aux2Fit Is Nothing OrElse plan.Aux2Fit.Scale <= 0 Then Return Nothing
+
+        Dim mainArea As Double = plan.MainFit.ProjectedW * plan.MainFit.ProjectedH
+        Dim aux1Area As Double = plan.Aux1Fit.ProjectedW * plan.Aux1Fit.ProjectedH
+        Dim aux2Area As Double = plan.Aux2Fit.ProjectedW * plan.Aux2Fit.ProjectedH
+
+        Dim workArea As Double = RectW(plan.MainSlot) * RectH(plan.MainSlot) +
+                                 RectW(plan.Aux1Slot) * RectH(plan.Aux1Slot) +
+                                 RectW(plan.Aux2Slot) * RectH(plan.Aux2Slot)
+        If workArea <= 0 Then Return Nothing
+
+        Dim fill As Double = (mainArea + aux1Area + aux2Area) / workArea
+        Dim mainDominance As Double = mainArea / Math.Max(0.0001, mainArea + aux1Area + aux2Area)
+        Dim auxBalance As Double = Math.Min(aux1Area, aux2Area) / Math.Max(0.0001, Math.Max(aux1Area, aux2Area))
+        plan.Score = fill * 0.35 + mainDominance * 0.4 + auxBalance * 0.25
+
+        Dim mainProfile As Boolean = IsProfileLikeMeasure(mainM)
+        Dim mainLong As Boolean = IsLongitudinalMeasure(mainM)
+        Dim mainPlan As Boolean = IsPlanLikeMeasure(mainM)
+        Dim auxProfile As Boolean = IsProfileLikeMeasure(auxA)
+        Dim auxLong As Boolean = IsLongitudinalMeasure(auxA)
+
+        If archetype = LayoutArchetype.RadialSegment Then
+            If mainPlan OrElse mainM.CurveCount >= 14 Then plan.Score += 0.28
+            If auxProfile Then plan.Score += 0.16
+            If String.Equals(isoM.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then plan.Score += 0.1
+            If mainProfile AndAlso (Not mainPlan) Then plan.Score -= 0.18
+        ElseIf archetype = LayoutArchetype.LongLinear Then
+            If mainLong Then plan.Score += 0.28
+            If auxProfile Then plan.Score += 0.16
+            If String.Equals(isoM.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then plan.Score += 0.1
+            If mainLong AndAlso mainArea < aux1Area Then plan.Score -= 0.2
+        Else
+            If mainPlan Then plan.Score += 0.24
+            If (Not auxLong) OrElse auxProfile Then plan.Score += 0.12
+            If String.Equals(isoM.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then plan.Score += 0.1
+        End If
+
+        If auxProfile AndAlso mainLong Then plan.Score += 0.05
+        If auxLong AndAlso mainProfile Then plan.Score -= 0.05
+        If String.Equals(mainM.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then plan.Score -= 0.25
+
+        If Math.Abs(mainM.AspectRatio - auxA.AspectRatio) < 0.28 Then plan.Score -= 0.07
+        If mainM.CurveCount < 4 AndAlso auxA.CurveCount < 4 Then plan.Score -= 0.12
+
+        Return plan
     End Function
 
     Private Function EvaluatePlan(ptn As LayoutPattern,
@@ -686,19 +809,19 @@ Public Class AlbumBuilder
         plan.MainFit = ScaleToFit(plan.MainSlot, mainM, ISO_SCALE_MARGIN)
         plan.Aux1Fit = ScaleToFit(plan.Aux1Slot, aux1M, ORTHO_SCALE_MARGIN)
         plan.Aux2Fit = ScaleToFit(plan.Aux2Slot, aux2M, ORTHO_SCALE_MARGIN)
-        If isoM IsNot Nothing Then plan.IsoFit = ScaleToFit(plan.IsoSlot, isoM, ORTHO_SCALE_MARGIN)
+        If isoM IsNot Nothing Then plan.IsoFit = ScaleToFit(plan.IsoSlot, isoM, ISO_SCALE_MARGIN)
 
-        If plan.MainFit Is Nothing OrElse plan.MainFit.Scale <= 0 Then Return Nothing
-        If plan.Aux1Fit Is Nothing OrElse plan.Aux1Fit.Scale <= 0 Then Return Nothing
-        If plan.Aux2Fit Is Nothing OrElse plan.Aux2Fit.Scale <= 0 Then Return Nothing
+        If plan.MainFit Is Nothing OrElse plan.Aux1Fit Is Nothing OrElse plan.Aux2Fit Is Nothing Then Return Nothing
+
+        plan.MainMeasure = mainM
+        plan.Aux1Measure = aux1M
+        plan.Aux2Measure = aux2M
 
         Dim mainArea As Double = plan.MainFit.ProjectedW * plan.MainFit.ProjectedH
         Dim auxArea As Double = plan.Aux1Fit.ProjectedW * plan.Aux1Fit.ProjectedH +
                                 plan.Aux2Fit.ProjectedW * plan.Aux2Fit.ProjectedH
         Dim isoArea As Double = 0
-        If plan.IsoFit IsNot Nothing Then
-            isoArea = plan.IsoFit.ProjectedW * plan.IsoFit.ProjectedH
-        End If
+        If plan.IsoFit IsNot Nothing Then isoArea = plan.IsoFit.ProjectedW * plan.IsoFit.ProjectedH
 
         Dim workArea As Double = RectW(plan.MainSlot) * RectH(plan.MainSlot) +
                                  RectW(plan.Aux1Slot) * RectH(plan.Aux1Slot) +
@@ -716,31 +839,33 @@ Public Class AlbumBuilder
 
     Private Sub AddViewAnnotations(doc As DrawingDocument, sheet As Sheet,
                                    v As DrawingView, slot As SlotRect,
-                                   measure As ViewMeasure,
-                                   isMain As Boolean)
+                                   measure As ViewMeasure)
         If v Is Nothing Then Return
 
-        Dim caption As String = "Изометрия"
+        Dim caption As String = "Вид"
         If measure IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(measure.Caption) Then
             caption = measure.Caption
         End If
 
         Try
-            Dim capY As Double = v.Top - v.Height - Cm(doc, VIEW_CAPTION_GAP_MM)
-            Dim minY As Double = slot.B + Cm(doc, 2.0)
-            If capY < minY Then
-                capY = Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, VIEW_CAPTION_GAP_MM))
-            End If
-
             Dim px As Double = Math.Max(slot.L + Cm(doc, 2.0), Math.Min(slot.R - Cm(doc, 2.0), v.Left + v.Width / 2.0))
-            capY = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), capY))
+            Dim belowY As Double = v.Top - v.Height - Cm(doc, VIEW_CAPTION_GAP_MM)
+            Dim topSafe As Double = slot.T - Cm(doc, 2.0)
+            Dim botSafe As Double = slot.B + Cm(doc, 2.0)
+            Dim capY As Double = belowY
+
+            If capY < botSafe Then
+                capY = Math.Min(topSafe, v.Top + Cm(doc, VIEW_CAPTION_GAP_MM))
+            End If
+            capY = Math.Max(botSafe, Math.Min(topSafe, capY))
             sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, capY), caption)
         Catch ex As Exception
             Debug.Print("WARN AddViewAnnotations caption: " & ex.Message)
         End Try
 
         If Not ADD_VIEW_DIMENSIONS Then Return
-        If isMain AndAlso (Not DIMENSIONS_ON_MAIN_ISO) Then Return
+        If measure Is Nothing Then Return
+        If String.Equals(measure.Key, "ISO", StringComparison.OrdinalIgnoreCase) Then Return
 
         Dim added As Integer = 0
         added += TryAddTrueDimensions(doc, sheet, v, slot, True, True)
@@ -782,7 +907,7 @@ Public Class AlbumBuilder
                 Try
                     Dim i1 As GeometryIntent = sheet.CreateGeometryIntent(minXCurve, PointIntentEnum.kMidPointIntent)
                     Dim i2 As GeometryIntent = sheet.CreateGeometryIntent(maxXCurve, PointIntentEnum.kMidPointIntent)
-                    Dim p As Point2d = _app.TransientGeometry.CreatePoint2d((slot.L + slot.R) / 2.0, Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 4.0)))
+                    Dim p As Point2d = _app.TransientGeometry.CreatePoint2d((slot.L + slot.R) / 2.0, Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 3.5)))
                     sheet.DrawingDimensions.GeneralDimensions.AddLinear(p, i1, i2, DimensionTypeEnum.kHorizontalDimensionType)
                     count += 1
                 Catch
@@ -793,7 +918,7 @@ Public Class AlbumBuilder
                 Try
                     Dim j1 As GeometryIntent = sheet.CreateGeometryIntent(minYCurve, PointIntentEnum.kMidPointIntent)
                     Dim j2 As GeometryIntent = sheet.CreateGeometryIntent(maxYCurve, PointIntentEnum.kMidPointIntent)
-                    Dim p2 As Point2d = _app.TransientGeometry.CreatePoint2d(Math.Min(slot.R - Cm(doc, 1.0), v.Left + v.Width + Cm(doc, 3.0)), (slot.B + slot.T) / 2.0)
+                    Dim p2 As Point2d = _app.TransientGeometry.CreatePoint2d(Math.Min(slot.R - Cm(doc, 1.0), v.Left + v.Width + Cm(doc, 2.6)), (slot.B + slot.T) / 2.0)
                     sheet.DrawingDimensions.GeneralDimensions.AddLinear(p2, j1, j2, DimensionTypeEnum.kVerticalDimensionType)
                     count += 1
                 Catch
@@ -821,17 +946,15 @@ Public Class AlbumBuilder
 
             If addHorizontal AndAlso realWmm >= VIEW_DIM_MIN_MM Then
                 Dim px As Double = Math.Max(slot.L + Cm(doc, 3.0), Math.Min(slot.R - Cm(doc, 3.0), v.Left + v.Width / 2.0))
-                Dim py As Double
-                If isProfile Then
-                    py = Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 4.0))
-                ElseIf isLong Then
-                    py = Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 4.5))
-                Else
-                    py = Math.Min(slot.T - Cm(doc, 1.5), v.Top + Cm(doc, 4.0))
-                End If
+                Dim py As Double = Math.Min(slot.T - Cm(doc, 2.2), v.Top + Cm(doc, 3.7))
+                If isLong Then py = Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 4.2))
+                If isProfile Then py = Math.Min(slot.T - Cm(doc, 2.1), v.Top + Cm(doc, 3.4))
                 py = Math.Max(slot.B + Cm(doc, 2.0), py)
-                sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, py),
-                                       "↔ " & String.Format("{0:F0} мм", realWmm))
+
+                If RectW(slot) >= Cm(doc, 22.0) Then
+                    sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, py),
+                                           "↔ " & String.Format("{0:F0} мм", realWmm))
+                End If
             End If
 
             If addVertical AndAlso realHmm >= VIEW_DIM_MIN_MM Then
@@ -839,22 +962,22 @@ Public Class AlbumBuilder
                 Dim leftSpace As Double = v.Left - slot.L
                 Dim px2 As Double
                 If rightSpace >= leftSpace Then
-                    px2 = Math.Min(slot.R - Cm(doc, 1.0), v.Left + v.Width + Cm(doc, 2.5))
+                    px2 = Math.Min(slot.R - Cm(doc, 1.2), v.Left + v.Width + Cm(doc, 2.2))
                 Else
-                    px2 = Math.Max(slot.L + Cm(doc, 1.0), v.Left - Cm(doc, 2.5))
+                    px2 = Math.Max(slot.L + Cm(doc, 1.2), v.Left - Cm(doc, 2.2))
                 End If
 
-                Dim py2 As Double
-                If isProfile Then
-                    py2 = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0))
-                ElseIf isLong Then
-                    py2 = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0))
-                Else
-                    py2 = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height / 2.0))
+                Dim py2 As Double = v.Top - v.Height / 2.0
+                If isLong Then
+                    py2 = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height * 0.45))
+                ElseIf isProfile Then
+                    py2 = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height * 0.5))
                 End If
 
-                sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px2, py2),
-                                       "↕ " & String.Format("{0:F0} мм", realHmm))
+                If RectH(slot) >= Cm(doc, 18.0) Then
+                    sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px2, py2),
+                                           "↕ " & String.Format("{0:F0} мм", realHmm))
+                End If
             End If
         Catch ex As Exception
             Debug.Print("WARN AddFallbackDimensionNotes: " & ex.Message)
@@ -1247,6 +1370,12 @@ Public Class AlbumBuilder
     ' ================================================================
     '  ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ
     ' ================================================================
+    Public Enum LayoutArchetype
+        RadialSegment
+        LongLinear
+        PlateBlock
+    End Enum
+
     Public Class SlotRect
         Public L As Double
         Public R As Double
