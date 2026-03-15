@@ -49,6 +49,7 @@ Option Explicit On
 Imports Inventor
 Imports System
 Imports System.Collections.Generic
+Imports System.Runtime.CompilerServices
 
 Sub Main()
     Dim excelPath     As String = String.Empty
@@ -1035,6 +1036,7 @@ Public Class AlbumBuilder
         Dim viewOverallCount As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         Dim viewFeatureCount As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         Dim viewIntentKeys As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim realDimCount As Integer = 0
 
         plan.Intents.Sort(Function(a As DimensionIntent, b As DimensionIntent) a.Priority.CompareTo(b.Priority))
         For Each intent As DimensionIntent In plan.Intents
@@ -1065,11 +1067,24 @@ Public Class AlbumBuilder
 
             If added > 0 Then
                 placedIntents.Add(intent.IntentId)
+                realDimCount += added
             ElseIf intent.AllowFallbackNote Then
                 Dim m As ViewMeasure = roleMap.GetMeasure(targetRole)
                 AddFallbackDimensionNotes(doc, sheet, v, slot, intent.IntentId, m)
                 placedIntents.Add(intent.IntentId)
             End If
+        Next
+
+        Dim keyViews As New List(Of DrawingView)()
+        If placedViews.ContainsKey(ViewRole.CrossProfile) Then keyViews.Add(placedViews(ViewRole.CrossProfile))
+        If placedViews.ContainsKey(ViewRole.SlopeView) Then keyViews.Add(placedViews(ViewRole.SlopeView))
+        If keyViews.Count = 1 AndAlso placedViews.ContainsKey(ViewRole.LongitudinalFacade) Then keyViews.Add(placedViews(ViewRole.LongitudinalFacade))
+
+        For Each keyView As DrawingView In keyViews
+            If realDimCount >= 5 Then Exit For
+            Dim slot As SlotRect = New SlotRect(keyView.Left, keyView.Left + keyView.Width, keyView.Top - keyView.Height, keyView.Top)
+            Dim supplement As Integer = TryAddTrueDimensions(doc, sheet, keyView, slot, True, True, True, True, 5 - realDimCount)
+            realDimCount += supplement
         Next
     End Sub
 
@@ -1114,7 +1129,7 @@ Public Class AlbumBuilder
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
 
-        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV)
+        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, False, False)
         If added > 0 Then
             usedKeys.Add(dedupeKey)
             counters(viewKey) = GetCounter(counters, viewKey) + added
@@ -1133,7 +1148,7 @@ Public Class AlbumBuilder
 
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
-        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV)
+        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True)
         If added > 0 Then
             usedKeys.Add(dedupeKey)
             counters(viewKey) = GetCounter(counters, viewKey) + added
@@ -1151,7 +1166,7 @@ Public Class AlbumBuilder
 
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
-        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV)
+        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True)
         If added > 0 Then
             usedKeys.Add(dedupeKey)
             counters(viewKey) = GetCounter(counters, viewKey) + added
@@ -1162,20 +1177,18 @@ Public Class AlbumBuilder
     Private Function TryAddRadiusDimension(sheet As Sheet, v As DrawingView) As Integer
         If sheet Is Nothing OrElse v Is Nothing Then Return 0
         Try
-            Dim curves As DrawingCurvesEnumerator = v.DrawingCurves
-            If curves Is Nothing Then Return 0
-            For i As Integer = 1 To curves.Count
-                Dim c As DrawingCurve = curves.Item(i)
-                If c Is Nothing Then Continue For
-                If c.CurveType = Curve2dTypeEnum.kCircularArcCurve2d OrElse c.CurveType = Curve2dTypeEnum.kCircleCurve2d Then
-                    Try
-                        Dim gi As GeometryIntent = sheet.CreateGeometryIntent(c)
-                        Dim pt As Point2d = _app.TransientGeometry.CreatePoint2d(v.Left + v.Width + 0.5, v.Top - v.Height * 0.4)
-                        sheet.DrawingDimensions.GeneralDimensions.AddRadius(pt, gi)
-                        Return 1
-                    Catch
-                    End Try
-                End If
+            Dim bucket As CurveBucket = CollectViewCurves(v)
+            For Each c As DrawingCurve In bucket.Arcs
+                Try
+                    Dim gi As GeometryIntent = sheet.CreateGeometryIntent(c)
+                    Dim rb As Box2d = c.RangeBox
+                    Dim px As Double = Math.Min(v.Left + v.Width + 0.7, rb.MaxPoint.X + 0.8)
+                    Dim py As Double = (rb.MinPoint.Y + rb.MaxPoint.Y) / 2.0
+                    Dim pt As Point2d = _app.TransientGeometry.CreatePoint2d(px, py)
+                    sheet.DrawingDimensions.GeneralDimensions.AddRadius(pt, gi)
+                    Return 1
+                Catch
+                End Try
             Next
         Catch
         End Try
@@ -1761,57 +1774,213 @@ Public Class AlbumBuilder
     Private Function TryAddTrueDimensions(doc As DrawingDocument, sheet As Sheet,
                                           v As DrawingView, slot As SlotRect,
                                           addHorizontal As Boolean,
-                                          addVertical As Boolean) As Integer
+                                          addVertical As Boolean,
+                                          Optional preferLocal As Boolean = False,
+                                          Optional includeFeatureOffsets As Boolean = True,
+                                          Optional maxToAdd As Integer = Integer.MaxValue) As Integer
         Dim count As Integer = 0
         Try
-            Dim curves As DrawingCurvesEnumerator = v.DrawingCurves
-            If curves Is Nothing OrElse curves.Count < 2 Then Return 0
+            Dim bucket As CurveBucket = CollectViewCurves(v)
+            Dim placedPairs As New HashSet(Of String)(StringComparer.Ordinal)
 
-            Dim minXCurve As DrawingCurve = Nothing
-            Dim maxXCurve As DrawingCurve = Nothing
-            Dim minYCurve As DrawingCurve = Nothing
-            Dim maxYCurve As DrawingCurve = Nothing
-            Dim minX As Double = Double.MaxValue
-            Dim maxX As Double = Double.MinValue
-            Dim minY As Double = Double.MaxValue
-            Dim maxY As Double = Double.MinValue
+            If addHorizontal Then
+                Dim hExt As CurvePair = FindExtremeCurves(bucket, True)
+                count += AddLinearPairDimension(doc, sheet, v, slot, hExt, DimensionTypeEnum.kHorizontalDimensionType, False, placedPairs)
+                If count >= maxToAdd Then Return count
 
-            For i As Integer = 1 To curves.Count
-                Dim c As DrawingCurve = curves.Item(i)
-                Dim rb As Box2d = c.RangeBox
-                Dim cx As Double = (rb.MinPoint.X + rb.MaxPoint.X) / 2.0
-                Dim cy As Double = (rb.MinPoint.Y + rb.MaxPoint.Y) / 2.0
-                If cx < minX Then minX = cx : minXCurve = c
-                If cx > maxX Then maxX = cx : maxXCurve = c
-                If cy < minY Then minY = cy : minYCurve = c
-                If cy > maxY Then maxY = cy : maxYCurve = c
-            Next
+                If preferLocal Then
+                    Dim hLocal As CurvePair = FindInnerParallelPairs(bucket, True)
+                    count += AddLinearPairDimension(doc, sheet, v, slot, hLocal, DimensionTypeEnum.kHorizontalDimensionType, True, placedPairs)
+                    If count >= maxToAdd Then Return count
+                End If
 
-            If addHorizontal AndAlso minXCurve IsNot Nothing AndAlso maxXCurve IsNot Nothing Then
-                Try
-                    Dim i1 As GeometryIntent = sheet.CreateGeometryIntent(minXCurve, PointIntentEnum.kMidPointIntent)
-                    Dim i2 As GeometryIntent = sheet.CreateGeometryIntent(maxXCurve, PointIntentEnum.kMidPointIntent)
-                    Dim p As Point2d = _app.TransientGeometry.CreatePoint2d((slot.L + slot.R) / 2.0, Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 3.5)))
-                    sheet.DrawingDimensions.GeneralDimensions.AddLinear(p, i1, i2, DimensionTypeEnum.kHorizontalDimensionType)
-                    count += 1
-                Catch
-                End Try
+                If includeFeatureOffsets Then
+                    Dim pairs As List(Of CurvePair) = FindFeatureOffsets(bucket, True)
+                    For Each pair As CurvePair In pairs
+                        count += AddLinearPairDimension(doc, sheet, v, slot, pair, DimensionTypeEnum.kHorizontalDimensionType, True, placedPairs)
+                        If count >= maxToAdd Then Return count
+                    Next
+                End If
             End If
 
-            If addVertical AndAlso minYCurve IsNot Nothing AndAlso maxYCurve IsNot Nothing Then
-                Try
-                    Dim j1 As GeometryIntent = sheet.CreateGeometryIntent(minYCurve, PointIntentEnum.kMidPointIntent)
-                    Dim j2 As GeometryIntent = sheet.CreateGeometryIntent(maxYCurve, PointIntentEnum.kMidPointIntent)
-                    Dim p2 As Point2d = _app.TransientGeometry.CreatePoint2d(Math.Min(slot.R - Cm(doc, 1.0), v.Left + v.Width + Cm(doc, 2.6)), (slot.B + slot.T) / 2.0)
-                    sheet.DrawingDimensions.GeneralDimensions.AddLinear(p2, j1, j2, DimensionTypeEnum.kVerticalDimensionType)
-                    count += 1
-                Catch
-                End Try
+            If addVertical Then
+                Dim vExt As CurvePair = FindExtremeCurves(bucket, False)
+                count += AddLinearPairDimension(doc, sheet, v, slot, vExt, DimensionTypeEnum.kVerticalDimensionType, False, placedPairs)
+                If count >= maxToAdd Then Return count
+
+                If preferLocal Then
+                    Dim vLocal As CurvePair = FindInnerParallelPairs(bucket, False)
+                    count += AddLinearPairDimension(doc, sheet, v, slot, vLocal, DimensionTypeEnum.kVerticalDimensionType, True, placedPairs)
+                    If count >= maxToAdd Then Return count
+                End If
+
+                If includeFeatureOffsets Then
+                    Dim pairs As List(Of CurvePair) = FindFeatureOffsets(bucket, False)
+                    For Each pair As CurvePair In pairs
+                        count += AddLinearPairDimension(doc, sheet, v, slot, pair, DimensionTypeEnum.kVerticalDimensionType, True, placedPairs)
+                        If count >= maxToAdd Then Return count
+                    Next
+                End If
             End If
         Catch ex As Exception
             Debug.Print("WARN TryAddTrueDimensions: " & ex.Message)
         End Try
         Return count
+    End Function
+
+    Private Function CollectViewCurves(v As DrawingView) As CurveBucket
+        Dim bucket As New CurveBucket()
+        If v Is Nothing Then Return bucket
+        Try
+            Dim curves As DrawingCurvesEnumerator = v.DrawingCurves
+            If curves Is Nothing Then Return bucket
+
+            Dim tol As Double = Math.Max(0.02, Math.Min(v.Width, v.Height) * 0.03)
+            For i As Integer = 1 To curves.Count
+                Dim c As DrawingCurve = curves.Item(i)
+                If c Is Nothing Then Continue For
+                Dim rb As Box2d = c.RangeBox
+                Dim dx As Double = Math.Abs(rb.MaxPoint.X - rb.MinPoint.X)
+                Dim dy As Double = Math.Abs(rb.MaxPoint.Y - rb.MinPoint.Y)
+                Dim outer As Boolean = (Math.Abs(rb.MinPoint.X - v.Left) <= tol OrElse Math.Abs(rb.MaxPoint.X - (v.Left + v.Width)) <= tol OrElse Math.Abs(rb.MinPoint.Y - (v.Top - v.Height)) <= tol OrElse Math.Abs(rb.MaxPoint.Y - v.Top) <= tol)
+
+                If c.CurveType = Curve2dTypeEnum.kCircularArcCurve2d OrElse c.CurveType = Curve2dTypeEnum.kCircleCurve2d Then
+                    bucket.Arcs.Add(c)
+                ElseIf dx >= dy * 2.2 Then
+                    If outer Then
+                        bucket.OuterHorizontal.Add(c)
+                    Else
+                        bucket.InnerHorizontal.Add(c)
+                    End If
+                ElseIf dy >= dx * 2.2 Then
+                    If outer Then
+                        bucket.OuterVertical.Add(c)
+                    Else
+                        bucket.InnerVertical.Add(c)
+                    End If
+                Else
+                    bucket.Sloped.Add(c)
+                End If
+            Next
+        Catch ex As Exception
+            Debug.Print("WARN CollectViewCurves: " & ex.Message)
+        End Try
+        Return bucket
+    End Function
+
+    Private Function FindExtremeCurves(bucket As CurveBucket, horizontalDim As Boolean) As CurvePair
+        Dim pair As New CurvePair()
+        Dim pool As List(Of DrawingCurve) = If(horizontalDim, bucket.OuterVertical, bucket.OuterHorizontal)
+        If pool Is Nothing OrElse pool.Count < 2 Then pool = If(horizontalDim, bucket.InnerVertical, bucket.InnerHorizontal)
+        If pool Is Nothing OrElse pool.Count < 2 Then
+            Dim all As New List(Of DrawingCurve)()
+            If horizontalDim Then
+                all.AddRange(bucket.OuterVertical) : all.AddRange(bucket.InnerVertical)
+            Else
+                all.AddRange(bucket.OuterHorizontal) : all.AddRange(bucket.InnerHorizontal)
+            End If
+            pool = all
+        End If
+        If pool Is Nothing OrElse pool.Count < 2 Then Return pair
+
+        Dim minCurve As DrawingCurve = Nothing
+        Dim maxCurve As DrawingCurve = Nothing
+        Dim minVal As Double = Double.MaxValue
+        Dim maxVal As Double = Double.MinValue
+        For Each c As DrawingCurve In pool
+            Dim center As Double = GetCurveCenterCoordinate(c, horizontalDim)
+            If center < minVal Then minVal = center : minCurve = c
+            If center > maxVal Then maxVal = center : maxCurve = c
+        Next
+        pair.First = minCurve
+        pair.Second = maxCurve
+        Return pair
+    End Function
+
+    Private Function FindInnerParallelPairs(bucket As CurveBucket, horizontalDim As Boolean) As CurvePair
+        Dim pair As New CurvePair()
+        Dim pool As List(Of DrawingCurve) = If(horizontalDim, bucket.InnerVertical, bucket.InnerHorizontal)
+        If pool Is Nothing OrElse pool.Count < 2 Then Return pair
+
+        Dim bestGap As Double = -1.0
+        For i As Integer = 0 To pool.Count - 2
+            For j As Integer = i + 1 To pool.Count - 1
+                Dim gap As Double = Math.Abs(GetCurveCenterCoordinate(pool(j), horizontalDim) - GetCurveCenterCoordinate(pool(i), horizontalDim))
+                If gap > bestGap Then
+                    bestGap = gap
+                    pair.First = pool(i)
+                    pair.Second = pool(j)
+                End If
+            Next
+        Next
+        Return pair
+    End Function
+
+    Private Function FindFeatureOffsets(bucket As CurveBucket, horizontalDim As Boolean) As List(Of CurvePair)
+        Dim result As New List(Of CurvePair)()
+        Dim pool As New List(Of DrawingCurve)()
+        If horizontalDim Then
+            pool.AddRange(bucket.InnerVertical)
+            pool.AddRange(bucket.OuterVertical)
+        Else
+            pool.AddRange(bucket.InnerHorizontal)
+            pool.AddRange(bucket.OuterHorizontal)
+        End If
+        If pool.Count < 3 Then Return result
+
+        pool.Sort(Function(a As DrawingCurve, b As DrawingCurve) GetCurveCenterCoordinate(a, horizontalDim).CompareTo(GetCurveCenterCoordinate(b, horizontalDim)))
+        For i As Integer = 0 To pool.Count - 2
+            Dim pair As New CurvePair()
+            pair.First = pool(i)
+            pair.Second = pool(i + 1)
+            result.Add(pair)
+            If result.Count >= 2 Then Exit For
+        Next
+        Return result
+    End Function
+
+    Private Function AddLinearPairDimension(doc As DrawingDocument,
+                                            sheet As Sheet,
+                                            v As DrawingView,
+                                            slot As SlotRect,
+                                            pair As CurvePair,
+                                            dimType As DimensionTypeEnum,
+                                            localOffset As Boolean,
+                                            placedPairs As HashSet(Of String)) As Integer
+        If pair Is Nothing OrElse pair.First Is Nothing OrElse pair.Second Is Nothing Then Return 0
+        Dim key As String = BuildCurvePairKey(pair.First, pair.Second)
+        If placedPairs.Contains(key) Then Return 0
+        Try
+            Dim i1 As GeometryIntent = sheet.CreateGeometryIntent(pair.First, PointIntentEnum.kMidPointIntent)
+            Dim i2 As GeometryIntent = sheet.CreateGeometryIntent(pair.Second, PointIntentEnum.kMidPointIntent)
+            Dim p As Point2d = Nothing
+            If dimType = DimensionTypeEnum.kHorizontalDimensionType Then
+                Dim py As Double = If(localOffset, Math.Max(slot.B + Cm(doc, 1.5), v.Top - v.Height - Cm(doc, 1.8)), Math.Min(slot.T - Cm(doc, 2.0), v.Top + Cm(doc, 3.5)))
+                p = _app.TransientGeometry.CreatePoint2d((slot.L + slot.R) / 2.0, py)
+            Else
+                Dim px As Double = If(localOffset, Math.Max(slot.L + Cm(doc, 1.5), v.Left - Cm(doc, 1.8)), Math.Min(slot.R - Cm(doc, 1.0), v.Left + v.Width + Cm(doc, 2.6)))
+                p = _app.TransientGeometry.CreatePoint2d(px, (slot.B + slot.T) / 2.0)
+            End If
+            sheet.DrawingDimensions.GeneralDimensions.AddLinear(p, i1, i2, dimType)
+            placedPairs.Add(key)
+            Return 1
+        Catch
+        End Try
+        Return 0
+    End Function
+
+    Private Function GetCurveCenterCoordinate(c As DrawingCurve, horizontalDim As Boolean) As Double
+        If c Is Nothing Then Return 0.0
+        Dim rb As Box2d = c.RangeBox
+        If horizontalDim Then Return (rb.MinPoint.X + rb.MaxPoint.X) / 2.0
+        Return (rb.MinPoint.Y + rb.MaxPoint.Y) / 2.0
+    End Function
+
+    Private Function BuildCurvePairKey(a As DrawingCurve, b As DrawingCurve) As String
+        Dim h1 As Integer = RuntimeHelpers.GetHashCode(a)
+        Dim h2 As Integer = RuntimeHelpers.GetHashCode(b)
+        If h1 < h2 Then Return h1.ToString() & "|" & h2.ToString()
+        Return h2.ToString() & "|" & h1.ToString()
     End Function
 
     Private Sub AddFallbackDimensionNotes(doc As DrawingDocument, sheet As Sheet,
@@ -2471,6 +2640,20 @@ Public Class AlbumBuilder
         Public PreferredRole As ViewRole
         Public Priority As Integer
         Public AllowFallbackNote As Boolean
+    End Class
+
+    Public Class CurvePair
+        Public First As DrawingCurve
+        Public Second As DrawingCurve
+    End Class
+
+    Public Class CurveBucket
+        Public OuterVertical As New List(Of DrawingCurve)()
+        Public OuterHorizontal As New List(Of DrawingCurve)()
+        Public InnerVertical As New List(Of DrawingCurve)()
+        Public InnerHorizontal As New List(Of DrawingCurve)()
+        Public Sloped As New List(Of DrawingCurve)()
+        Public Arcs As New List(Of DrawingCurve)()
     End Class
 
     Public Class DimensionPlan
