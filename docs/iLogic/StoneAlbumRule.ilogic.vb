@@ -428,55 +428,506 @@ Public Class AlbumBuilder
             Debug.Print("WARN: не удалось измерить изометрический shaded вид")
             Return False
         End If
-
-        Dim archetype As LayoutArchetype = DetectLayoutArchetype(mFront, mBack, mTop, mLeft, mRight)
         Dim all2D As List(Of ViewMeasure) = BuildAll2DCandidates(mFront, mBack, mTop, mLeft, mRight)
         If all2D Is Nothing OrElse all2D.Count < 2 Then
             Debug.Print("WARN: недостаточно 2D-кандидатов для подбора layout")
             Return False
         End If
 
-        Dim orderedPairs As List(Of AuxPair) = BuildOrderedViewPairs(all2D)
-        If orderedPairs Is Nothing OrElse orderedPairs.Count = 0 Then
-            Debug.Print("WARN: не удалось построить ordered пары 2D-видов")
+        Dim descriptor As PartDescriptor = ClassifyPart(all2D)
+        DebugPrintDescriptor(descriptor)
+
+        Dim roleMap As RoleMap = ResolveRoles(descriptor, all2D, mIso)
+        DebugPrintRoleMap(roleMap)
+
+        Dim templates As List(Of LayoutTemplate) = BuildLayoutTemplates(doc, safe, gap, descriptor)
+        If templates Is Nothing OrElse templates.Count = 0 Then
+            Debug.Print("WARN: не удалось построить шаблоны layout")
             Return False
         End If
 
-        Dim patterns As List(Of LayoutPattern) = BuildLayoutPatternsByArchetype(doc, safe, gap, archetype)
-        Dim best As LayoutPlan = Nothing
-
-        For Each ptn As LayoutPattern In patterns
-            For Each pair As AuxPair In orderedPairs
-                If pair Is Nothing OrElse pair.A Is Nothing OrElse pair.B Is Nothing Then Continue For
-                Dim candidate As LayoutPlan = EvaluatePlanFlexible(ptn, archetype, pair.A, pair.B, mIso)
-                If candidate Is Nothing Then Continue For
-                If best Is Nothing OrElse candidate.Score > best.Score Then
-                    best = candidate
-                End If
-            Next
-        Next
-
+        Dim best As LayoutPlan = EvaluateBestTemplate(templates, descriptor, roleMap)
         If best Is Nothing Then
             Debug.Print("WARN: не найден корректный layout визуализации")
             Return False
         End If
 
-        Dim vMain As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.MainMeasure, best.MainFit, best.MainSlot)
-        Dim vAux1 As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.Aux1Measure, best.Aux1Fit, best.Aux1Slot)
-        Dim vAux2 As DrawingView = PlaceViewInSlot(sheet, modelDoc, best.Aux2Measure, best.Aux2Fit, best.Aux2Slot)
+        Debug.Print("Layout template=" & best.TemplateName & ", score=" & String.Format("{0:F3}", best.Score))
 
-        If vMain Is Nothing OrElse vAux1 Is Nothing OrElse vAux2 Is Nothing Then
-            Debug.Print("WARN: не удалось разместить один или несколько видов")
+        Dim placedViews As Dictionary(Of ViewRole, DrawingView) = PlaceViewsByTemplate(sheet, modelDoc, best)
+        If placedViews Is Nothing OrElse placedViews.Count = 0 Then
+            Debug.Print("WARN: не удалось разместить виды по template")
             Return False
         End If
 
         If ADD_VIEW_NOTES Then
-            AddViewAnnotations(doc, sheet, vMain, best.MainSlot, best.MainMeasure)
-            AddViewAnnotations(doc, sheet, vAux1, best.Aux1Slot, best.Aux1Measure)
-            AddViewAnnotations(doc, sheet, vAux2, best.Aux2Slot, best.Aux2Measure)
+            AddViewRoleCaptions(doc, sheet, best, placedViews)
+        End If
+
+        If ADD_VIEW_DIMENSIONS Then
+            Dim dimPlan As DimensionPlan = BuildDimensionPlan(descriptor, roleMap)
+            DebugPrintDimensionPlan(dimPlan)
+            ApplyDimensionPlan(doc, sheet, placedViews, roleMap, dimPlan)
         End If
 
         Return True
+    End Function
+
+    Private Sub DebugPrintDescriptor(d As PartDescriptor)
+        If d Is Nothing Then Return
+        Debug.Print("Part family=" & d.Family.ToString() &
+                    ", long=" & d.IsLong.ToString() &
+                    ", thin=" & d.IsThin.ToString() &
+                    ", domPlan=" & d.HasDominantPlan.ToString() &
+                    ", domFacade=" & d.HasDominantFacade.ToString() &
+                    ", radial=" & d.HasRadialPlan.ToString() &
+                    ", slope=" & d.HasSlope.ToString() &
+                    ", profileComplex=" & d.HasComplexProfile.ToString())
+    End Sub
+
+    Private Sub DebugPrintRoleMap(roleMap As RoleMap)
+        If roleMap Is Nothing Then Return
+        For Each kv As KeyValuePair(Of ViewRole, ViewMeasure) In roleMap.ByRole
+            If kv.Value Is Nothing Then Continue For
+            Debug.Print("Role " & kv.Key.ToString() & " => " & kv.Value.Key)
+        Next
+    End Sub
+
+    Private Sub DebugPrintDimensionPlan(plan As DimensionPlan)
+        If plan Is Nothing Then Return
+        Dim ids As New List(Of String)()
+        For Each i As DimensionIntent In plan.Intents
+            ids.Add(i.IntentId.ToString() & "@" & i.PreferredRole.ToString() & "[P" & i.Priority.ToString() & "]")
+        Next
+        Debug.Print("DimensionPlan: " & String.Join(", ", ids.ToArray()))
+    End Sub
+
+    Private Function ClassifyPart(measures As List(Of ViewMeasure)) As PartDescriptor
+        Dim d As New PartDescriptor()
+        If measures Is Nothing OrElse measures.Count = 0 Then
+            d.Family = PartFamily.Plate
+            Return d
+        End If
+
+        Dim maxAr As Double = 0
+        Dim maxSlope As Double = 0
+        Dim maxArcRatio As Double = 0
+        Dim maxProfile As Double = 0
+        Dim maxPlan As Double = 0
+        Dim totalArea As Double = 0
+
+        For Each m As ViewMeasure In measures
+            If m Is Nothing Then Continue For
+            maxAr = Math.Max(maxAr, m.AspectRatio)
+            maxSlope = Math.Max(maxSlope, m.SlopeScore)
+            maxProfile = Math.Max(maxProfile, m.ProfileComplexityScore)
+            maxPlan = Math.Max(maxPlan, m.PlanComplexityScore)
+            totalArea += m.BoundingArea
+            If m.CurveCount > 0 Then
+                maxArcRatio = Math.Max(maxArcRatio, CDbl(m.ArcCount + m.CircleCount) / CDbl(Math.Max(1, m.CurveCount)))
+            End If
+        Next
+
+        d.IsLong = (maxAr >= 3.6)
+        d.IsThin = (maxAr >= 6.0)
+        d.HasSlope = (maxSlope >= 0.26)
+        d.HasComplexProfile = (maxProfile >= 1.2)
+        d.HasRadialPlan = (maxArcRatio >= 0.22)
+        d.HasPlanTaper = (maxSlope >= 0.18 AndAlso maxPlan >= 0.95)
+        d.HasDominantPlan = HasDominantByKey(measures, "TOP")
+        d.HasDominantFacade = HasDominantByKey(measures, "FRONT") OrElse HasDominantByKey(measures, "BACK")
+        d.HasDovetailEnds = (maxProfile >= 1.55 AndAlso maxSlope >= 0.18)
+        d.HasDecorativeRecess = (maxPlan >= 1.25 AndAlso maxProfile >= 1.25)
+        d.HasEdgeRadiusOrDrip = d.HasRadialPlan OrElse maxArcRatio >= 0.15
+
+        If d.HasSlope Then
+            d.Family = PartFamily.Sloped
+        ElseIf d.HasRadialPlan Then
+            d.Family = PartFamily.Radial
+        ElseIf d.IsLong Then
+            d.Family = PartFamily.Linear
+        Else
+            d.Family = PartFamily.Plate
+        End If
+
+        Return d
+    End Function
+
+    Private Function HasDominantByKey(measures As List(Of ViewMeasure), key As String) As Boolean
+        If measures Is Nothing Then Return False
+        Dim maxArea As Double = 0
+        Dim targetArea As Double = 0
+        For Each m As ViewMeasure In measures
+            If m Is Nothing Then Continue For
+            maxArea = Math.Max(maxArea, m.BoundingArea)
+            If String.Equals(m.Key, key, StringComparison.OrdinalIgnoreCase) Then
+                targetArea = Math.Max(targetArea, m.BoundingArea)
+            End If
+        Next
+        Return targetArea > 0 AndAlso targetArea >= maxArea * 0.82
+    End Function
+
+    Private Function ResolveRoles(descriptor As PartDescriptor,
+                                  measures As List(Of ViewMeasure),
+                                  isoMeasure As ViewMeasure) As RoleMap
+        Dim map As New RoleMap()
+        If measures Is Nothing Then Return map
+
+        Dim used As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim orderedPairs As List(Of AuxPair) = BuildOrderedViewPairs(measures)
+
+        AssignRole(map, ViewRole.PlanContour, PickBestForRole(ViewRole.PlanContour, descriptor, measures, used))
+        AssignRole(map, ViewRole.LongitudinalFacade, PickBestForRole(ViewRole.LongitudinalFacade, descriptor, measures, used))
+        AssignRole(map, ViewRole.CrossProfile, PickBestForRole(ViewRole.CrossProfile, descriptor, measures, used))
+
+        Dim slopeCandidate As ViewMeasure = PickBestForRole(ViewRole.SlopeView, descriptor, measures, used)
+        If slopeCandidate Is Nothing AndAlso descriptor IsNot Nothing AndAlso descriptor.HasSlope AndAlso orderedPairs.Count > 0 Then
+            slopeCandidate = orderedPairs(0).A
+        End If
+        AssignRole(map, ViewRole.SlopeView, slopeCandidate)
+
+        AssignRole(map, ViewRole.ThicknessView, PickBestForRole(ViewRole.ThicknessView, descriptor, measures, used))
+        AssignRole(map, ViewRole.EndFace, PickBestForRole(ViewRole.EndFace, descriptor, measures, used))
+        AssignRole(map, ViewRole.MainContour, PickMainContour(descriptor, map, measures, used))
+        AssignRole(map, ViewRole.IsoReference, isoMeasure)
+        Return map
+    End Function
+
+    Private Sub AssignRole(map As RoleMap, role As ViewRole, m As ViewMeasure)
+        If map Is Nothing OrElse m Is Nothing Then Return
+        map.ByRole(role) = m
+    End Sub
+
+    Private Function PickMainContour(descriptor As PartDescriptor,
+                                     map As RoleMap,
+                                     measures As List(Of ViewMeasure),
+                                     used As HashSet(Of String)) As ViewMeasure
+        If descriptor IsNot Nothing Then
+            If descriptor.Family = PartFamily.Sloped AndAlso map.ByRole.ContainsKey(ViewRole.SlopeView) Then Return map.ByRole(ViewRole.SlopeView)
+            If (descriptor.Family = PartFamily.Radial OrElse descriptor.Family = PartFamily.Plate) AndAlso map.ByRole.ContainsKey(ViewRole.PlanContour) Then Return map.ByRole(ViewRole.PlanContour)
+            If descriptor.Family = PartFamily.Linear AndAlso map.ByRole.ContainsKey(ViewRole.LongitudinalFacade) Then Return map.ByRole(ViewRole.LongitudinalFacade)
+        End If
+        Return PickBestForRole(ViewRole.MainContour, descriptor, measures, used)
+    End Function
+
+    Private Function PickBestForRole(role As ViewRole,
+                                     descriptor As PartDescriptor,
+                                     measures As List(Of ViewMeasure),
+                                     used As HashSet(Of String)) As ViewMeasure
+        Dim best As ViewMeasure = Nothing
+        Dim bestScore As Double = Double.MinValue
+        For Each m As ViewMeasure In measures
+            If m Is Nothing Then Continue For
+            Dim score As Double = ScoreViewForRole(role, descriptor, m)
+            If used IsNot Nothing AndAlso used.Contains(m.Key) Then score -= 0.22
+            If best Is Nothing OrElse score > bestScore Then
+                best = m
+                bestScore = score
+            End If
+        Next
+        If best IsNot Nothing AndAlso used IsNot Nothing Then used.Add(best.Key)
+        Return best
+    End Function
+
+    Private Function ScoreViewForRole(role As ViewRole, descriptor As PartDescriptor, m As ViewMeasure) As Double
+        Dim s As Double = m.BoundingArea * 0.08 + m.CurveCount * 0.02
+        Select Case role
+            Case ViewRole.PlanContour
+                If String.Equals(m.Key, "TOP", StringComparison.OrdinalIgnoreCase) Then s += 1.1
+                s += m.PlanComplexityScore * 0.8
+                s -= m.SlopeScore * 0.25
+            Case ViewRole.LongitudinalFacade
+                If String.Equals(m.Key, "FRONT", StringComparison.OrdinalIgnoreCase) OrElse String.Equals(m.Key, "BACK", StringComparison.OrdinalIgnoreCase) Then s += 0.9
+                s += m.VerticalBias * 0.55
+                s += Math.Min(2.0, m.AspectRatio) * 0.35
+            Case ViewRole.CrossProfile
+                If String.Equals(m.Key, "LEFT", StringComparison.OrdinalIgnoreCase) OrElse String.Equals(m.Key, "RIGHT", StringComparison.OrdinalIgnoreCase) Then s += 0.9
+                s += m.ProfileComplexityScore * 0.75
+                s += m.InnerContourCount * 0.06
+            Case ViewRole.SlopeView
+                s += m.SlopeScore * 1.25
+                s += m.NonAxisEdgeCount * 0.06
+            Case ViewRole.ThicknessView
+                s += m.LongEdgeBias * 0.45
+                If m.AspectRatio >= 4.5 Then s += 0.35
+            Case ViewRole.EndFace
+                s += m.ProfileComplexityScore * 0.45
+                s += m.CircleCount * 0.1
+            Case Else
+                s += m.ProfileComplexityScore * 0.2
+        End Select
+
+        If descriptor IsNot Nothing Then
+            If descriptor.Family = PartFamily.Radial Then s += m.ArcCount * 0.04
+            If descriptor.Family = PartFamily.Sloped Then s += m.SlopeScore * 0.4
+            If descriptor.Family = PartFamily.Linear AndAlso role = ViewRole.LongitudinalFacade Then s += m.AspectRatio * 0.12
+        End If
+        Return s
+    End Function
+
+    Private Function BuildLayoutTemplates(doc As DrawingDocument,
+                                          safe As SlotRect,
+                                          gap As Double,
+                                          descriptor As PartDescriptor) As List(Of LayoutTemplate)
+        Dim result As New List(Of LayoutTemplate)()
+        Dim w As Double = RectW(safe)
+        Dim h As Double = RectH(safe)
+        Dim leftW As Double = safe.L + w * 0.32
+        Dim rightL As Double = safe.L + w * 0.36
+
+        Dim baseMain As SlotRect = InsetRect(New SlotRect(safe.L, leftW, safe.B, safe.T), gap * 0.18)
+        Dim baseAuxTop As SlotRect = InsetRect(New SlotRect(rightL, safe.R, safe.B + h * 0.54, safe.T), gap * 0.18)
+        Dim baseIso As SlotRect = InsetRect(New SlotRect(rightL + w * 0.08, safe.R, safe.B, safe.B + h * 0.46), gap * 0.18)
+
+        result.Add(NewLayoutTemplate("LINEAR_FACADE_LEFT_PROFILE_TOP_ISO", PartFamily.Linear, ViewRole.LongitudinalFacade, ViewRole.CrossProfile, ViewRole.IsoReference, baseMain, baseAuxTop, baseIso))
+        result.Add(NewLayoutTemplate("LINEAR_PROFILE_MAIN_FACADE_LEFT_ISO", PartFamily.Linear, ViewRole.CrossProfile, ViewRole.LongitudinalFacade, ViewRole.IsoReference,
+                                     InsetRect(New SlotRect(safe.L, safe.L + w * 0.55, safe.B + h * 0.18, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.58, safe.R, safe.B + h * 0.52, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.62, safe.R, safe.B, safe.B + h * 0.46), gap * 0.18)))
+        result.Add(NewLayoutTemplate("LINEAR_PLAN_MAIN_SIDE_LEFT_ISO", PartFamily.Linear, ViewRole.PlanContour, ViewRole.ThicknessView, ViewRole.IsoReference,
+                                     InsetRect(New SlotRect(safe.L, safe.L + w * 0.62, safe.B + h * 0.34, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.65, safe.R, safe.B + h * 0.34, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.52, safe.R, safe.B, safe.B + h * 0.30), gap * 0.18)))
+
+        result.Add(NewLayoutTemplate("PLATE_PLAN_MAIN_EDGE_LEFT_ISO", PartFamily.Plate, ViewRole.PlanContour, ViewRole.ThicknessView, ViewRole.IsoReference,
+                                     InsetRect(New SlotRect(safe.L, safe.L + w * 0.64, safe.B + h * 0.32, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.66, safe.R, safe.B + h * 0.32, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.58, safe.R, safe.B, safe.B + h * 0.28), gap * 0.18)))
+        result.Add(NewLayoutTemplate("PLATE_PLAN_MAIN_PROFILE_LEFT_ISO", PartFamily.Plate, ViewRole.PlanContour, ViewRole.CrossProfile, ViewRole.IsoReference,
+                                     InsetRect(New SlotRect(safe.L, safe.L + w * 0.58, safe.B + h * 0.30, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.60, safe.R, safe.B + h * 0.50, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.64, safe.R, safe.B, safe.B + h * 0.45), gap * 0.18)))
+
+        result.Add(NewLayoutTemplate("RADIAL_PLAN_MAIN_PROFILE_SIDE_ISO", PartFamily.Radial, ViewRole.PlanContour, ViewRole.CrossProfile, ViewRole.IsoReference,
+                                     InsetRect(New SlotRect(safe.L, safe.L + w * 0.52, safe.B + h * 0.26, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.56, safe.R, safe.B + h * 0.46, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.60, safe.R, safe.B, safe.B + h * 0.42), gap * 0.18)))
+        result.Add(NewLayoutTemplate("RADIAL_PROFILE_HEAVY", PartFamily.Radial, ViewRole.CrossProfile, ViewRole.PlanContour, ViewRole.IsoReference,
+                                     InsetRect(New SlotRect(safe.L, safe.L + w * 0.57, safe.B + h * 0.18, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.60, safe.R, safe.B + h * 0.56, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.64, safe.R, safe.B, safe.B + h * 0.50), gap * 0.18)))
+
+        result.Add(NewLayoutTemplate("SLOPED_PLAN_COMPLEX", PartFamily.Sloped, ViewRole.PlanContour, ViewRole.SlopeView, ViewRole.IsoReference,
+                                     InsetRect(New SlotRect(safe.L, safe.L + w * 0.60, safe.B + h * 0.28, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.63, safe.R, safe.B + h * 0.52, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.60, safe.R, safe.B, safe.B + h * 0.48), gap * 0.18)))
+        result.Add(NewLayoutTemplate("SLOPED_FACADE_MAIN", PartFamily.Sloped, ViewRole.SlopeView, ViewRole.PlanContour, ViewRole.IsoReference,
+                                     InsetRect(New SlotRect(safe.L, safe.L + w * 0.38, safe.B, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.42, safe.R, safe.B + h * 0.56, safe.T), gap * 0.18),
+                                     InsetRect(New SlotRect(safe.L + w * 0.52, safe.R, safe.B, safe.B + h * 0.50), gap * 0.18)))
+
+        If descriptor Is Nothing Then Return result
+        Dim filtered As New List(Of LayoutTemplate)()
+        For Each t As LayoutTemplate In result
+            If t.Family = descriptor.Family Then filtered.Add(t)
+        Next
+        If filtered.Count > 0 Then Return filtered
+        Return result
+    End Function
+
+    Private Function NewLayoutTemplate(name As String, fam As PartFamily,
+                                       mainRole As ViewRole, auxRole As ViewRole, isoRole As ViewRole,
+                                       mainSlot As SlotRect, auxSlot As SlotRect, isoSlot As SlotRect) As LayoutTemplate
+        Dim t As New LayoutTemplate()
+        t.TemplateName = name
+        t.Family = fam
+        t.MainRole = mainRole
+        t.AuxRole = auxRole
+        t.IsoRole = isoRole
+        t.RequiredRoles.Add(mainRole)
+        t.RequiredRoles.Add(auxRole)
+        t.RequiredRoles.Add(isoRole)
+        t.MainSlot = mainSlot
+        t.AuxSlot = auxSlot
+        t.IsoSlot = isoSlot
+        Return t
+    End Function
+
+    Private Function EvaluateBestTemplate(templates As List(Of LayoutTemplate),
+                                          descriptor As PartDescriptor,
+                                          roleMap As RoleMap) As LayoutPlan
+        Dim best As LayoutPlan = Nothing
+        For Each t As LayoutTemplate In templates
+            Dim p As LayoutPlan = EvaluateTemplate(t, descriptor, roleMap)
+            If p Is Nothing Then Continue For
+            If best Is Nothing OrElse p.Score > best.Score Then best = p
+        Next
+        Return best
+    End Function
+
+    Private Function EvaluateTemplate(t As LayoutTemplate,
+                                      descriptor As PartDescriptor,
+                                      roleMap As RoleMap) As LayoutPlan
+        If t Is Nothing OrElse roleMap Is Nothing Then Return Nothing
+        Dim mainM As ViewMeasure = roleMap.GetMeasure(t.MainRole)
+        Dim auxM As ViewMeasure = roleMap.GetMeasure(t.AuxRole)
+        Dim isoM As ViewMeasure = roleMap.GetMeasure(t.IsoRole)
+        If mainM Is Nothing OrElse auxM Is Nothing OrElse isoM Is Nothing Then Return Nothing
+
+        Dim p As New LayoutPlan()
+        p.TemplateName = t.TemplateName
+        p.MainRole = t.MainRole
+        p.AuxRole = t.AuxRole
+        p.IsoRole = t.IsoRole
+        p.MainSlot = t.MainSlot
+        p.Aux1Slot = t.AuxSlot
+        p.Aux2Slot = t.IsoSlot
+        p.MainMeasure = mainM
+        p.Aux1Measure = auxM
+        p.Aux2Measure = isoM
+
+        p.MainFit = ScaleToFit(p.MainSlot, mainM, ORTHO_SCALE_MARGIN)
+        p.Aux1Fit = ScaleToFit(p.Aux1Slot, auxM, ORTHO_SCALE_MARGIN)
+        p.Aux2Fit = ScaleToFit(p.Aux2Slot, isoM, ISO_SCALE_MARGIN)
+        If p.MainFit Is Nothing OrElse p.Aux1Fit Is Nothing OrElse p.Aux2Fit Is Nothing Then Return Nothing
+
+        Dim mainFill As Double = (p.MainFit.ProjectedW * p.MainFit.ProjectedH) / Math.Max(0.0001, RectW(p.MainSlot) * RectH(p.MainSlot))
+        Dim auxFill As Double = (p.Aux1Fit.ProjectedW * p.Aux1Fit.ProjectedH) / Math.Max(0.0001, RectW(p.Aux1Slot) * RectH(p.Aux1Slot))
+        Dim complement As Double = Math.Abs(mainM.AspectRatio - auxM.AspectRatio)
+        p.Score = mainFill * 0.55 + auxFill * 0.25 + Math.Min(1.0, complement / 3.0) * 0.2
+
+        If descriptor IsNot Nothing Then
+            If descriptor.Family = PartFamily.Sloped AndAlso t.MainRole = ViewRole.SlopeView Then p.Score += 0.2
+            If descriptor.Family = PartFamily.Linear AndAlso t.MainRole = ViewRole.LongitudinalFacade Then p.Score += 0.12
+            If descriptor.Family = PartFamily.Radial AndAlso String.Equals(t.TemplateName, "RADIAL_PROFILE_HEAVY", StringComparison.OrdinalIgnoreCase) AndAlso descriptor.HasComplexProfile Then
+                p.Score += 0.2
+            End If
+        End If
+        Return p
+    End Function
+
+    Private Function PlaceViewsByTemplate(sheet As Sheet, modelDoc As Document, plan As LayoutPlan) As Dictionary(Of ViewRole, DrawingView)
+        Dim placed As New Dictionary(Of ViewRole, DrawingView)()
+        If plan Is Nothing Then Return placed
+
+        Dim mainV As DrawingView = PlaceViewInSlot(sheet, modelDoc, plan.MainMeasure, plan.MainFit, plan.MainSlot)
+        Dim auxV As DrawingView = PlaceViewInSlot(sheet, modelDoc, plan.Aux1Measure, plan.Aux1Fit, plan.Aux1Slot)
+        Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, plan.Aux2Measure, plan.Aux2Fit, plan.Aux2Slot)
+
+        If mainV Is Nothing OrElse auxV Is Nothing OrElse isoV Is Nothing Then Return Nothing
+        placed(plan.MainRole) = mainV
+        placed(plan.AuxRole) = auxV
+        placed(plan.IsoRole) = isoV
+        Return placed
+    End Function
+
+    Private Sub AddViewRoleCaptions(doc As DrawingDocument,
+                                    sheet As Sheet,
+                                    plan As LayoutPlan,
+                                    placed As Dictionary(Of ViewRole, DrawingView))
+        If plan Is Nothing OrElse placed Is Nothing Then Return
+        Try
+            AddViewAnnotations(doc, sheet, placed(plan.MainRole), plan.MainSlot, plan.MainMeasure, False)
+            AddViewAnnotations(doc, sheet, placed(plan.AuxRole), plan.Aux1Slot, plan.Aux1Measure, False)
+            AddViewAnnotations(doc, sheet, placed(plan.IsoRole), plan.Aux2Slot, plan.Aux2Measure, False)
+        Catch ex As Exception
+            Debug.Print("WARN AddViewRoleCaptions: " & ex.Message)
+        End Try
+    End Sub
+
+    Private Function BuildDimensionPlan(descriptor As PartDescriptor,
+                                        roleMap As RoleMap) As DimensionPlan
+        Dim plan As New DimensionPlan()
+        If descriptor Is Nothing Then Return plan
+
+        Select Case descriptor.Family
+            Case PartFamily.Plate
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallLength, ViewRole.PlanContour, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallWidth, ViewRole.PlanContour, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.ThicknessView, 0, True))
+                If descriptor.HasComplexProfile Then
+                    plan.Intents.Add(NewIntent(DimensionIntentId.ProfileDepth, ViewRole.CrossProfile, 1, True))
+                End If
+            Case PartFamily.Linear
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallLength, ViewRole.LongitudinalFacade, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallHeight, ViewRole.LongitudinalFacade, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.CrossProfile, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.ProfileHeight, ViewRole.CrossProfile, 1, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.ProfileDepth, ViewRole.CrossProfile, 1, True))
+                If descriptor.HasComplexProfile Then
+                    plan.Intents.Add(NewIntent(DimensionIntentId.StepHeight, ViewRole.CrossProfile, 2, True))
+                End If
+            Case PartFamily.Radial
+                plan.Intents.Add(NewIntent(DimensionIntentId.ChordOrSpan, ViewRole.PlanContour, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallWidth, ViewRole.PlanContour, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.RadiusMain, ViewRole.PlanContour, 1, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.CrossProfile, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.ProfileHeight, ViewRole.CrossProfile, 1, True))
+            Case PartFamily.Sloped
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallLength, ViewRole.SlopeView, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.SlopeHeightHigh, ViewRole.SlopeView, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.SlopeHeightLow, ViewRole.SlopeView, 0, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallThickness, ViewRole.ThicknessView, 1, True))
+                plan.Intents.Add(NewIntent(DimensionIntentId.OverallWidth, ViewRole.PlanContour, 1, True))
+        End Select
+        Return plan
+    End Function
+
+    Private Function NewIntent(id As DimensionIntentId,
+                               role As ViewRole,
+                               priority As Integer,
+                               allowFallback As Boolean) As DimensionIntent
+        Dim i As New DimensionIntent()
+        i.IntentId = id
+        i.PreferredRole = role
+        i.Priority = priority
+        i.AllowFallbackNote = allowFallback
+        Return i
+    End Function
+
+    Private Sub ApplyDimensionPlan(doc As DrawingDocument,
+                                   sheet As Sheet,
+                                   placedViews As Dictionary(Of ViewRole, DrawingView),
+                                   roleMap As RoleMap,
+                                   plan As DimensionPlan)
+        If plan Is Nothing OrElse placedViews Is Nothing Then Return
+        Dim placedIntents As New HashSet(Of DimensionIntentId)()
+
+        plan.Intents.Sort(Function(a As DimensionIntent, b As DimensionIntent) a.Priority.CompareTo(b.Priority))
+        For Each intent As DimensionIntent In plan.Intents
+            If placedIntents.Contains(intent.IntentId) Then Continue For
+            If intent.PreferredRole = ViewRole.IsoReference Then Continue For
+            Dim v As DrawingView = Nothing
+            If placedViews.ContainsKey(intent.PreferredRole) Then v = placedViews(intent.PreferredRole)
+            If v Is Nothing Then Continue For
+
+            Dim slot As SlotRect = ResolveSlotByRole(placedViews, intent.PreferredRole)
+            Dim addH As Boolean = IsHorizontalIntent(intent.IntentId)
+            Dim addV As Boolean = IsVerticalIntent(intent.IntentId)
+
+            Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV)
+            If added > 0 Then
+                placedIntents.Add(intent.IntentId)
+            ElseIf intent.AllowFallbackNote Then
+                Dim m As ViewMeasure = roleMap.GetMeasure(intent.PreferredRole)
+                AddFallbackDimensionNotes(doc, sheet, v, slot, addH, addV, m)
+                placedIntents.Add(intent.IntentId)
+                Debug.Print("Fallback dimension note for " & intent.IntentId.ToString())
+            End If
+        Next
+    End Sub
+
+    Private Function ResolveSlotByRole(placedViews As Dictionary(Of ViewRole, DrawingView), role As ViewRole) As SlotRect
+        Dim v As DrawingView = Nothing
+        If placedViews.ContainsKey(role) Then v = placedViews(role)
+        If v Is Nothing Then Return New SlotRect(0, 0, 0, 0)
+        Return New SlotRect(v.Left, v.Left + v.Width, v.Top - v.Height, v.Top)
+    End Function
+
+    Private Function IsHorizontalIntent(id As DimensionIntentId) As Boolean
+        Return (id = DimensionIntentId.OverallLength OrElse
+                id = DimensionIntentId.OverallWidth OrElse
+                id = DimensionIntentId.ChordOrSpan OrElse
+                id = DimensionIntentId.ProfileDepth)
+    End Function
+
+    Private Function IsVerticalIntent(id As DimensionIntentId) As Boolean
+        Return (id = DimensionIntentId.OverallHeight OrElse
+                id = DimensionIntentId.OverallThickness OrElse
+                id = DimensionIntentId.ProfileHeight OrElse
+                id = DimensionIntentId.StepHeight OrElse
+                id = DimensionIntentId.SlopeHeightHigh OrElse
+                id = DimensionIntentId.SlopeHeightLow)
     End Function
 
     Private Function BuildLayoutPatternsByArchetype(doc As DrawingDocument, safe As SlotRect, gap As Double, archetype As LayoutArchetype) As List(Of LayoutPattern)
@@ -987,7 +1438,8 @@ Public Class AlbumBuilder
 
     Private Sub AddViewAnnotations(doc As DrawingDocument, sheet As Sheet,
                                    v As DrawingView, slot As SlotRect,
-                                   measure As ViewMeasure)
+                                   measure As ViewMeasure,
+                                   Optional includeDimensions As Boolean = True)
         If v Is Nothing Then Return
 
         Dim caption As String = "Вид"
@@ -1011,6 +1463,7 @@ Public Class AlbumBuilder
             Debug.Print("WARN AddViewAnnotations caption: " & ex.Message)
         End Try
 
+        If Not includeDimensions Then Return
         If Not ADD_VIEW_DIMENSIONS Then Return
         If measure Is Nothing Then Return
 
@@ -1191,11 +1644,46 @@ Public Class AlbumBuilder
             m.Key = key
             m.Caption = caption
 
+            Dim totalLen As Double = 0
+            Dim totalHLen As Double = 0
+            Dim totalVLen As Double = 0
+
             Try
-                m.CurveCount = probe.DrawingCurves.Count
+                Dim curves As DrawingCurvesEnumerator = probe.DrawingCurves
+                m.CurveCount = curves.Count
+                For i As Integer = 1 To curves.Count
+                    Dim c As DrawingCurve = curves.Item(i)
+                    If c Is Nothing Then Continue For
+                    Dim rb As Box2d = c.RangeBox
+                    Dim dx As Double = Math.Abs(rb.MaxPoint.X - rb.MinPoint.X)
+                    Dim dy As Double = Math.Abs(rb.MaxPoint.Y - rb.MinPoint.Y)
+                    Dim segLen As Double = Math.Sqrt(dx * dx + dy * dy)
+                    totalLen += segLen
+                    If dx >= dy Then totalHLen += segLen
+                    If dy >= dx Then totalVLen += segLen
+
+                    Select Case c.CurveType
+                        Case Curve2dTypeEnum.kLineSegmentCurve2d
+                            m.LineCount += 1
+                            If dx > 0.0001 AndAlso dy > 0.0001 Then m.NonAxisEdgeCount += 1
+                        Case Curve2dTypeEnum.kCircularArcCurve2d
+                            m.ArcCount += 1
+                        Case Curve2dTypeEnum.kCircleCurve2d
+                            m.CircleCount += 1
+                    End Select
+
+                    If dx > 0.0001 AndAlso dy > 0.0001 Then m.HasSlopeEdges = True
+                    If rb.MinPoint.X > (probe.Left + probe.Width * 0.1) AndAlso rb.MaxPoint.X < (probe.Left + probe.Width * 0.9) AndAlso _
+                       rb.MinPoint.Y > (probe.Top - probe.Height * 0.9) AndAlso rb.MaxPoint.Y < (probe.Top - probe.Height * 0.1) Then
+                        m.InnerContourCount += 1
+                    End If
+                Next
             Catch
                 m.CurveCount = 0
             End Try
+
+            m.HasArcs = (m.ArcCount + m.CircleCount) > 0
+            m.BoundingArea = Math.Max(0.0001, m.UnitW * m.UnitH)
 
             Try
                 Dim mx As Double = Math.Max(m.UnitW, m.UnitH)
@@ -1204,6 +1692,13 @@ Public Class AlbumBuilder
             Catch
                 m.AspectRatio = 1.0
             End Try
+
+            m.HorizontalBias = totalHLen / Math.Max(0.0001, totalLen)
+            m.VerticalBias = totalVLen / Math.Max(0.0001, totalLen)
+            m.LongEdgeBias = Math.Max(m.HorizontalBias, m.VerticalBias)
+            m.SlopeScore = CDbl(m.NonAxisEdgeCount) / Math.Max(1.0, CDbl(m.LineCount))
+            m.ProfileComplexityScore = CDbl(m.InnerContourCount) * 0.35 + CDbl(m.CurveCount) / 18.0 + CDbl(m.NonAxisEdgeCount) * 0.15
+            m.PlanComplexityScore = CDbl(m.ArcCount + m.CircleCount) * 0.25 + CDbl(m.CurveCount) / 20.0
 
             If m.UnitW < 0.0001 AndAlso m.UnitH < 0.0001 Then Return Nothing
             Return m
@@ -1555,6 +2050,39 @@ Public Class AlbumBuilder
         PlateBlock
     End Enum
 
+    Public Enum PartFamily
+        Plate
+        Linear
+        Radial
+        Sloped
+    End Enum
+
+    Public Enum ViewRole
+        MainContour
+        PlanContour
+        LongitudinalFacade
+        CrossProfile
+        SlopeView
+        EndFace
+        ThicknessView
+        IsoReference
+    End Enum
+
+    Public Enum DimensionIntentId
+        OverallLength
+        OverallWidth
+        OverallHeight
+        OverallThickness
+        ProfileDepth
+        ProfileHeight
+        StepHeight
+        SlopeHeightHigh
+        SlopeHeightLow
+        RadiusMain
+        RadiusSecondary
+        ChordOrSpan
+    End Enum
+
     Public Class SlotRect
         Public L As Double
         Public R As Double
@@ -1574,6 +2102,21 @@ Public Class AlbumBuilder
         Public Caption As String
         Public CurveCount As Integer
         Public AspectRatio As Double
+
+        Public LineCount As Integer
+        Public ArcCount As Integer
+        Public CircleCount As Integer
+        Public HasArcs As Boolean
+        Public HasSlopeEdges As Boolean
+        Public NonAxisEdgeCount As Integer
+        Public InnerContourCount As Integer
+        Public BoundingArea As Double
+        Public LongEdgeBias As Double
+        Public VerticalBias As Double
+        Public HorizontalBias As Double
+        Public ProfileComplexityScore As Double
+        Public PlanComplexityScore As Double
+        Public SlopeScore As Double
     End Class
 
     Public Class AuxPair
@@ -1617,7 +2160,57 @@ Public Class AlbumBuilder
         Public Aux1Measure As ViewMeasure
         Public Aux2Measure As ViewMeasure
 
+        Public MainRole As ViewRole
+        Public AuxRole As ViewRole
+        Public IsoRole As ViewRole
+        Public TemplateName As String
         Public Score As Double
+    End Class
+
+    Public Class PartDescriptor
+        Public Family As PartFamily
+        Public IsLong As Boolean
+        Public IsThin As Boolean
+        Public HasDominantPlan As Boolean
+        Public HasDominantFacade As Boolean
+        Public HasComplexProfile As Boolean
+        Public HasRadialPlan As Boolean
+        Public HasSlope As Boolean
+        Public HasPlanTaper As Boolean
+        Public HasDovetailEnds As Boolean
+        Public HasDecorativeRecess As Boolean
+        Public HasEdgeRadiusOrDrip As Boolean
+    End Class
+
+    Public Class RoleMap
+        Public ByRole As New Dictionary(Of ViewRole, ViewMeasure)()
+        Public Function GetMeasure(role As ViewRole) As ViewMeasure
+            If ByRole.ContainsKey(role) Then Return ByRole(role)
+            Return Nothing
+        End Function
+    End Class
+
+    Public Class LayoutTemplate
+        Public TemplateName As String
+        Public Family As PartFamily
+        Public RequiredRoles As New List(Of ViewRole)()
+        Public MainRole As ViewRole
+        Public AuxRole As ViewRole
+        Public IsoRole As ViewRole
+        Public MainSlot As SlotRect
+        Public AuxSlot As SlotRect
+        Public IsoSlot As SlotRect
+    End Class
+
+    Public Class DimensionIntent
+        Public IntentId As DimensionIntentId
+        Public PreferredRole As ViewRole
+        Public Priority As Integer
+        Public AllowFallbackNote As Boolean
+    End Class
+
+    Public Class DimensionPlan
+        Public Intents As New List(Of DimensionIntent)()
     End Class
 
     Public Class AlbumItem
@@ -1939,4 +2532,3 @@ Public NotInheritable Class XlsxReader
     End Function
 
 End Class
-
