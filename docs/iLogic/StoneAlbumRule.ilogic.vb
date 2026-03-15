@@ -1081,7 +1081,9 @@ Public Class AlbumBuilder
         Dim viewOverallCount As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         Dim viewFeatureCount As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         Dim viewIntentKeys As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim fallbackNoteKeys As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         Dim realDimCount As Integer = 0
+        Dim totalAdded As Integer = 0
         Dim pendingFallback As New List(Of FallbackRequest)()
 
         plan.Intents.Sort(Function(a As DimensionIntent, b As DimensionIntent) a.Priority.CompareTo(b.Priority))
@@ -1104,16 +1106,18 @@ Public Class AlbumBuilder
 
             Dim added As Integer = 0
             If IsOverallIntent(intent.IntentId) Then
-                added = TryAddOverallDimensions(doc, sheet, v, slot, intent.IntentId, viewIntentKeys, viewOverallCount, viewKey)
+                added = TryAddOverallDimensions(doc, sheet, v, slot, intent.IntentId, roleMap.GetMeasure(targetRole), viewIntentKeys, fallbackNoteKeys, viewOverallCount, viewKey)
             ElseIf IsProfileIntent(intent.IntentId) Then
-                added = TryAddProfileDimensions(doc, sheet, v, slot, intent.IntentId, viewIntentKeys, viewFeatureCount, viewKey)
+                added = TryAddProfileDimensions(doc, sheet, v, slot, intent.IntentId, roleMap.GetMeasure(targetRole), viewIntentKeys, fallbackNoteKeys, viewFeatureCount, viewKey)
             Else
-                added = TryAddFeatureDimensions(doc, sheet, v, slot, intent.IntentId, viewIntentKeys, viewFeatureCount, viewKey)
+                added = TryAddFeatureDimensions(doc, sheet, v, slot, intent.IntentId, roleMap.GetMeasure(targetRole), viewIntentKeys, fallbackNoteKeys, viewFeatureCount, viewKey)
             End If
 
             If added > 0 Then
                 placedIntents.Add(intent.IntentId)
                 realDimCount += added
+                totalAdded += added
+                Debug.Print("Dimension intent " & intent.IntentId.ToString() & " on " & targetRole.ToString() & ": real dimension added (" & added.ToString() & ")")
             ElseIf intent.AllowFallbackNote Then
                 Dim req As New FallbackRequest()
                 req.Intent = intent.IntentId
@@ -1122,6 +1126,9 @@ Public Class AlbumBuilder
                 req.Slot = slot
                 req.Measure = roleMap.GetMeasure(targetRole)
                 pendingFallback.Add(req)
+                Debug.Print("Dimension intent " & intent.IntentId.ToString() & " on " & targetRole.ToString() & ": deferred fallback")
+            Else
+                Debug.Print("Dimension intent " & intent.IntentId.ToString() & " on " & targetRole.ToString() & ": failed completely")
             End If
         Next
 
@@ -1142,9 +1149,20 @@ Public Class AlbumBuilder
 
         For Each req As FallbackRequest In pendingFallback
             If placedIntents.Contains(req.Intent) Then Continue For
-            AddFallbackDimensionNotes(doc, sheet, req.View, req.Slot, req.Intent, req.Measure)
-            placedIntents.Add(req.Intent)
+            If AddFallbackDimensionNotes(doc, sheet, req.View, req.Slot, req.Intent, req.Measure, fallbackNoteKeys) Then
+                placedIntents.Add(req.Intent)
+                totalAdded += 1
+                Debug.Print("Dimension intent " & req.Intent.ToString() & " on " & req.Role.ToString() & ": fallback note added")
+            Else
+                Debug.Print("Dimension intent " & req.Intent.ToString() & " on " & req.Role.ToString() & ": failed completely")
+            End If
         Next
+
+        If totalAdded = 0 Then
+            Dim forced As Integer = ForceVisibleFallbackDimensions(doc, sheet, placedViews, roleMap, plan, fallbackNoteKeys)
+            totalAdded += forced
+            Debug.Print("ForceVisibleFallbackDimensions: added=" & forced.ToString())
+        End If
     End Sub
 
     Private Function ResolveExistingRole(preferred As ViewRole, placedViews As Dictionary(Of ViewRole, DrawingView)) As ViewRole
@@ -1169,6 +1187,22 @@ Public Class AlbumBuilder
                 id = DimensionIntentId.SlopeHeightHigh OrElse id = DimensionIntentId.SlopeHeightLow OrElse id = DimensionIntentId.VisibleRadius)
     End Function
 
+    Private Function IsHorizontalIntent(id As DimensionIntentId) As Boolean
+        Return (id = DimensionIntentId.OverallLength OrElse id = DimensionIntentId.OverallWidth OrElse id = DimensionIntentId.ChordOrSpan OrElse
+                id = DimensionIntentId.ProfileDepth OrElse id = DimensionIntentId.LipDepth OrElse id = DimensionIntentId.RecessOffset OrElse
+                id = DimensionIntentId.EndCutLength OrElse id = DimensionIntentId.EdgeBandWidth)
+    End Function
+
+    Private Function IsVerticalIntent(id As DimensionIntentId) As Boolean
+        Return (id = DimensionIntentId.OverallHeight OrElse id = DimensionIntentId.OverallThickness OrElse id = DimensionIntentId.ProfileHeight OrElse
+                id = DimensionIntentId.StepHeight OrElse id = DimensionIntentId.SlopeHeightHigh OrElse id = DimensionIntentId.SlopeHeightLow OrElse
+                id = DimensionIntentId.LipHeight OrElse id = DimensionIntentId.RecessDepth OrElse id = DimensionIntentId.Chamfer)
+    End Function
+
+    Private Function IsRadiusIntent(id As DimensionIntentId) As Boolean
+        Return (id = DimensionIntentId.RadiusMain OrElse id = DimensionIntentId.RadiusSecondary OrElse id = DimensionIntentId.VisibleRadius)
+    End Function
+
     Private Function GetCounter(dict As Dictionary(Of String, Integer), key As String) As Integer
         If dict.ContainsKey(key) Then Return dict(key)
         Return 0
@@ -1176,11 +1210,16 @@ Public Class AlbumBuilder
 
     Private Function TryAddOverallDimensions(doc As DrawingDocument, sheet As Sheet, v As DrawingView, slot As SlotRect,
                                              intent As DimensionIntentId,
+                                             measure As ViewMeasure,
                                              usedKeys As HashSet(Of String),
+                                             noteKeys As HashSet(Of String),
                                              counters As Dictionary(Of String, Integer),
                                              viewKey As String) As Integer
         If intent = DimensionIntentId.RadiusMain OrElse intent = DimensionIntentId.RadiusSecondary OrElse intent = DimensionIntentId.VisibleRadius Then
-            Return TryAddRadiusDimension(sheet, v)
+            Dim radial As Integer = TryAddRadiusDimension(sheet, v)
+            If radial > 0 Then Return radial
+            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, measure, noteKeys) Then Return 1
+            Return 0
         End If
 
         Dim addH As Boolean = (intent = DimensionIntentId.OverallLength OrElse intent = DimensionIntentId.OverallWidth OrElse intent = DimensionIntentId.ChordOrSpan)
@@ -1189,6 +1228,9 @@ Public Class AlbumBuilder
         If usedKeys.Contains(dedupeKey) Then Return 0
 
         Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, False, False)
+        If added = 0 Then
+            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, measure, noteKeys) Then added = 1
+        End If
         If added > 0 Then
             usedKeys.Add(dedupeKey)
             counters(viewKey) = GetCounter(counters, viewKey) + added
@@ -1198,12 +1240,19 @@ Public Class AlbumBuilder
 
     Private Function TryAddProfileDimensions(doc As DrawingDocument, sheet As Sheet, v As DrawingView, slot As SlotRect,
                                              intent As DimensionIntentId,
+                                             measure As ViewMeasure,
                                              usedKeys As HashSet(Of String),
+                                             noteKeys As HashSet(Of String),
                                              counters As Dictionary(Of String, Integer),
                                              viewKey As String) As Integer
         Dim addH As Boolean = (intent = DimensionIntentId.ProfileDepth)
         Dim addV As Boolean = (intent = DimensionIntentId.ProfileHeight OrElse intent = DimensionIntentId.StepHeight OrElse intent = DimensionIntentId.SlopeHeightHigh OrElse intent = DimensionIntentId.SlopeHeightLow)
-        If intent = DimensionIntentId.VisibleRadius Then Return TryAddRadiusDimension(sheet, v)
+        If intent = DimensionIntentId.VisibleRadius Then
+            Dim radial As Integer = TryAddRadiusDimension(sheet, v)
+            If radial > 0 Then Return radial
+            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, measure, noteKeys) Then Return 1
+            Return 0
+        End If
 
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
@@ -1214,6 +1263,9 @@ Public Class AlbumBuilder
                 added += TryAddSlopeHeightByExtremums(doc, sheet, v, slot)
             End If
         End If
+        If added = 0 Then
+            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, measure, noteKeys) Then added = 1
+        End If
         If added > 0 Then
             usedKeys.Add(dedupeKey)
             counters(viewKey) = GetCounter(counters, viewKey) + added
@@ -1223,7 +1275,9 @@ Public Class AlbumBuilder
 
     Private Function TryAddFeatureDimensions(doc As DrawingDocument, sheet As Sheet, v As DrawingView, slot As SlotRect,
                                              intent As DimensionIntentId,
+                                             measure As ViewMeasure,
                                              usedKeys As HashSet(Of String),
+                                             noteKeys As HashSet(Of String),
                                              counters As Dictionary(Of String, Integer),
                                              viewKey As String) As Integer
         If intent = DimensionIntentId.RadiusMain OrElse intent = DimensionIntentId.RadiusSecondary Then
@@ -1242,6 +1296,9 @@ Public Class AlbumBuilder
             If intent = DimensionIntentId.EndCutLength OrElse intent = DimensionIntentId.Chamfer Then
                 added += TryAddSlopedProjectionDimension(doc, sheet, v, slot)
             End If
+        End If
+        If added = 0 Then
+            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, measure, noteKeys) Then added = 1
         End If
         If added > 0 Then
             usedKeys.Add(dedupeKey)
@@ -1263,11 +1320,14 @@ Public Class AlbumBuilder
                     Dim pt As Point2d = _app.TransientGeometry.CreatePoint2d(px, py)
                     sheet.DrawingDimensions.GeneralDimensions.AddRadius(pt, gi)
                     Return 1
-                Catch
+                Catch exArc As Exception
+                    Debug.Print("WARN TryAddRadiusDimension arc: " & exArc.Message)
                 End Try
             Next
-        Catch
+        Catch ex As Exception
+            Debug.Print("WARN TryAddRadiusDimension: " & ex.Message)
         End Try
+        Debug.Print("TryAddRadiusDimension: no radius dimension added")
         Return 0
     End Function
 
@@ -1825,19 +1885,20 @@ Public Class AlbumBuilder
         End If
 
         Dim added As Integer = 0
+        Dim localNoteKeys As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         added += TryAddTrueDimensions(doc, sheet, v, slot, addHorizontal, addVertical)
 
         If detailedProfile Then
-            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.ProfileHeight, measure)
+            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.ProfileHeight, measure, localNoteKeys)
         ElseIf facadeLike Then
             If lightDim Then
-                If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallHeight, measure)
+                If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallHeight, measure, localNoteKeys)
             Else
-                If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallHeight, measure)
-                If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallLength, measure)
+                If added < 1 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallHeight, measure, localNoteKeys)
+                If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallLength, measure, localNoteKeys)
             End If
         Else
-            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.ProfileHeight, measure)
+            If added < 2 Then AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.ProfileHeight, measure, localNoteKeys)
         End If
     End Sub
 
@@ -2005,7 +2066,8 @@ Public Class AlbumBuilder
             Dim placed As New HashSet(Of String)(StringComparer.Ordinal)
             Dim dt As DimensionTypeEnum = If(horizontalDim, DimensionTypeEnum.kHorizontalDimensionType, DimensionTypeEnum.kVerticalDimensionType)
             Return AddLinearPairDimension(doc, sheet, v, slot, pair, dt, True, placed)
-        Catch
+        Catch ex As Exception
+            Debug.Print("WARN TryAddOuterInnerDimension: " & ex.Message)
         End Try
         Return 0
     End Function
@@ -2060,7 +2122,8 @@ Public Class AlbumBuilder
             pair.Second = high
             Dim placed As New HashSet(Of String)(StringComparer.Ordinal)
             Return AddLinearPairDimension(doc, sheet, v, slot, pair, DimensionTypeEnum.kVerticalDimensionType, True, placed)
-        Catch
+        Catch ex As Exception
+            Debug.Print("WARN TryAddSlopeHeightByExtremums: " & ex.Message)
         End Try
         Return 0
     End Function
@@ -2085,7 +2148,8 @@ Public Class AlbumBuilder
             pair.Second = maxC
             Dim placed As New HashSet(Of String)(StringComparer.Ordinal)
             Return AddLinearPairDimension(doc, sheet, v, slot, pair, DimensionTypeEnum.kHorizontalDimensionType, True, placed)
-        Catch
+        Catch ex As Exception
+            Debug.Print("WARN TryAddSlopedProjectionDimension: " & ex.Message)
         End Try
         Return 0
     End Function
@@ -2138,7 +2202,8 @@ Public Class AlbumBuilder
             sheet.DrawingDimensions.GeneralDimensions.AddLinear(p, i1, i2, dimType)
             placedPairs.Add(key)
             Return 1
-        Catch
+        Catch ex As Exception
+            Debug.Print("WARN AddLinearPairDimension: " & ex.Message)
         End Try
         Return 0
     End Function
@@ -2157,26 +2222,134 @@ Public Class AlbumBuilder
         Return h2.ToString() & "|" & h1.ToString()
     End Function
 
-    Private Sub AddFallbackDimensionNotes(doc As DrawingDocument, sheet As Sheet,
-                                          v As DrawingView, slot As SlotRect,
-                                          intent As DimensionIntentId,
-                                          measure As ViewMeasure)
+    Private Function AddFallbackDimensionNotes(doc As DrawingDocument, sheet As Sheet,
+                                               v As DrawingView, slot As SlotRect,
+                                               intent As DimensionIntentId,
+                                               measure As ViewMeasure,
+                                               noteKeys As HashSet(Of String)) As Boolean
         Try
+            If sheet Is Nothing OrElse v Is Nothing Then Return False
             Dim sc As Double = v.Scale
-            If sc <= 0.0001 Then Return
+            If sc <= 0.0001 Then Return False
 
             Dim realWmm As Double = Math.Round(v.Width / sc * 10.0)
             Dim realHmm As Double = Math.Round(v.Height / sc * 10.0)
             Dim text As String = BuildFallbackIntentText(intent, realWmm, realHmm)
-            If String.IsNullOrWhiteSpace(text) Then Return
+            If String.IsNullOrWhiteSpace(text) Then Return False
 
-            Dim px As Double = Math.Max(slot.L + Cm(doc, 2.0), Math.Min(slot.R - Cm(doc, 2.0), v.Left + v.Width * 0.5))
-            Dim py As Double = Math.Max(slot.B + Cm(doc, 2.0), Math.Min(slot.T - Cm(doc, 2.0), v.Top - v.Height * 0.5))
+            Dim viewId As String = RuntimeHelpers.GetHashCode(v).ToString()
+            Dim dedupe As String = viewId & "|" & text
+            If noteKeys IsNot Nothing AndAlso noteKeys.Contains(dedupe) Then Return False
+
+            Dim minX As Double = Math.Min(slot.L, slot.R)
+            Dim maxX As Double = Math.Max(slot.L, slot.R)
+            Dim minY As Double = Math.Min(slot.B, slot.T)
+            Dim maxY As Double = Math.Max(slot.B, slot.T)
+
+            Dim px As Double = v.Left + v.Width * 0.5
+            Dim py As Double = v.Top - v.Height * 0.5
+
+            If IsRadiusIntent(intent) Then
+                px = v.Left + v.Width + Cm(doc, 1.6)
+                py = v.Top - v.Height * 0.35
+            ElseIf IsHorizontalIntent(intent) Then
+                px = v.Left + v.Width * 0.5
+                If (RuntimeHelpers.GetHashCode(v) Mod 2) = 0 Then
+                    py = v.Top + Cm(doc, 1.2)
+                Else
+                    py = v.Top - v.Height - Cm(doc, 1.2)
+                End If
+            ElseIf IsVerticalIntent(intent) Then
+                py = v.Top - v.Height * 0.5
+                If (RuntimeHelpers.GetHashCode(v) Mod 2) = 0 Then
+                    px = v.Left + v.Width + Cm(doc, 1.5)
+                Else
+                    px = v.Left - Cm(doc, 1.5)
+                End If
+            End If
+
+            px = Math.Max(minX + Cm(doc, 1.0), Math.Min(maxX - Cm(doc, 1.0), px))
+            py = Math.Max(minY + Cm(doc, 1.0), Math.Min(maxY - Cm(doc, 1.0), py))
+
             sheet.DrawingNotes.Add(_app.TransientGeometry.CreatePoint2d(px, py), text)
+            If noteKeys IsNot Nothing Then noteKeys.Add(dedupe)
+            Return True
         Catch ex As Exception
             Debug.Print("WARN AddFallbackDimensionNotes: " & ex.Message)
         End Try
-    End Sub
+        Return False
+    End Function
+
+    Private Function ForceVisibleFallbackDimensions(doc As DrawingDocument,
+                                                    sheet As Sheet,
+                                                    placedViews As Dictionary(Of ViewRole, DrawingView),
+                                                    roleMap As RoleMap,
+                                                    plan As DimensionPlan,
+                                                    noteKeys As HashSet(Of String)) As Integer
+        If sheet Is Nothing OrElse placedViews Is Nothing Then Return 0
+
+        Dim total As Integer = 0
+        Dim mainRole As ViewRole = ViewRole.MainContour
+        Dim auxRole As ViewRole = ViewRole.CrossProfile
+        If plan IsNot Nothing AndAlso plan.Intents IsNot Nothing Then
+            For Each i As DimensionIntent In plan.Intents
+                If i Is Nothing OrElse i.PreferredRole = ViewRole.IsoReference Then Continue For
+                mainRole = ResolveExistingRole(i.PreferredRole, placedViews)
+                Exit For
+            Next
+            For Each i As DimensionIntent In plan.Intents
+                If i Is Nothing OrElse i.PreferredRole = ViewRole.IsoReference Then Continue For
+                Dim r As ViewRole = ResolveExistingRole(i.PreferredRole, placedViews)
+                If r <> mainRole Then
+                    auxRole = r
+                    Exit For
+                End If
+            Next
+        End If
+
+        Dim prioritized As New List(Of ViewRole)()
+        prioritized.Add(mainRole)
+        prioritized.Add(auxRole)
+        prioritized.Add(ViewRole.LongitudinalFacade)
+        prioritized.Add(ViewRole.PlanContour)
+        prioritized.Add(ViewRole.CrossProfile)
+        prioritized.Add(ViewRole.SlopeView)
+        prioritized.Add(ViewRole.ThicknessView)
+        prioritized.Add(ViewRole.EndFace)
+
+        Dim visited As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        For Each role As ViewRole In prioritized
+            Dim r As ViewRole = ResolveExistingRole(role, placedViews)
+            Dim roleKey As String = r.ToString()
+            If visited.Contains(roleKey) Then Continue For
+            visited.Add(roleKey)
+            If Not placedViews.ContainsKey(r) Then Continue For
+            If r = ViewRole.IsoReference Then Continue For
+
+            Dim v As DrawingView = placedViews(r)
+            If v Is Nothing Then Continue For
+            Dim slot As New SlotRect(v.Left, v.Left + v.Width, v.Top - v.Height, v.Top)
+            Dim m As ViewMeasure = Nothing
+            If roleMap IsNot Nothing Then m = roleMap.GetMeasure(r)
+
+            If r = mainRole Then
+                If RectW(slot) >= RectH(slot) Then
+                    If AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallLength, m, noteKeys) Then total += 1
+                    If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallWidth, m, noteKeys) Then total += 1
+                Else
+                    If AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallHeight, m, noteKeys) Then total += 1
+                    If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallLength, m, noteKeys) Then total += 1
+                End If
+            Else
+                If AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallThickness, m, noteKeys) Then total += 1
+                If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.ProfileHeight, m, noteKeys) Then total += 1
+                If total < 2 AndAlso AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.RadiusMain, m, noteKeys) Then total += 1
+            End If
+
+            If total >= 2 Then Exit For
+        Next
+        Return total
+    End Function
 
     Private Function BuildFallbackIntentText(intent As DimensionIntentId, realWmm As Double, realHmm As Double) As String
         Select Case intent
