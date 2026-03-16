@@ -2568,7 +2568,7 @@ Public Class AlbumBuilder
                 Dim valueMm As Integer = 0
                 If Not TryGetFallbackOverallValueMm(intent, modelSize, valueMm) Then Return False
                 Dim kind As String = ResolveOverallPhysicalDimensionKind(intent, role)
-                dedupe = "overall|" & kind & "|" & valueMm.ToString() & "|" & viewId
+                dedupe = "overall|" & intent.ToString() & "|" & kind & "|" & valueMm.ToString() & "|" & viewId
             End If
             If noteKeys IsNot Nothing AndAlso noteKeys.Contains(dedupe) Then Return False
 
