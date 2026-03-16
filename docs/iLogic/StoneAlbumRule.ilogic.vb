@@ -1488,19 +1488,24 @@ Public Class AlbumBuilder
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
 
-        Dim added As Integer = 0
-        Dim overallKind As String = ResolveOverallPhysicalDimensionKind(intent, role)
-        If overallKind <> "unknown" AndAlso modelSize IsNot Nothing AndAlso modelSize.IsValid Then
-            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, role, measure, modelSize, noteKeys) Then added = 1
-        Else
-            Dim axis As DimensionAxis = ResolveOverallIntentAxis(intent, role, v, measure)
-            Dim addH As Boolean = (axis = DimensionAxis.Horizontal)
-            Dim addV As Boolean = (axis = DimensionAxis.Vertical)
-            Dim dedupeScope As String = BuildGlobalDimensionScope(viewKey, v)
-            added = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, False, False, Integer.MaxValue, globalDimensionKeys, dedupeScope)
-            If added = 0 Then
-                If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, role, measure, modelSize, noteKeys) Then added = 1
+        ' overall-intents must be fully model-driven when real 3D extents are available
+        If IsOverallIntent(intent) AndAlso modelSize IsNot Nothing AndAlso modelSize.IsValid Then
+            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, role, measure, modelSize, noteKeys) Then
+                usedKeys.Add(dedupeKey)
+                counters(viewKey) = GetCounter(counters, viewKey) + 1
+                Return 1
             End If
+            Return 0
+        End If
+
+        Dim axis As DimensionAxis = ResolveOverallIntentAxis(intent, role, v, measure)
+        Dim addH As Boolean = (axis = DimensionAxis.Horizontal)
+        Dim addV As Boolean = (axis = DimensionAxis.Vertical)
+        Dim dedupeScope As String = BuildGlobalDimensionScope(viewKey, v)
+
+        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, False, False, Integer.MaxValue, globalDimensionKeys, dedupeScope)
+        If added = 0 Then
+            If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, role, measure, modelSize, noteKeys) Then added = 1
         End If
 
         If added > 0 Then
@@ -2570,10 +2575,13 @@ Public Class AlbumBuilder
     Private Function BuildFallbackIntentText(intent As DimensionIntentId,
                                              role As ViewRole,
                                              modelSize As ModelOverallExtents) As String
-        Dim valueMm As Integer = 0
         Dim overallKind As String = ResolveOverallPhysicalDimensionKind(intent, role)
-        If overallKind <> "unknown" AndAlso TryGetFallbackOverallValueMm(intent, modelSize, valueMm) Then
-            Return valueMm.ToString() & " мм"
+        If overallKind <> "unknown" Then
+            Dim valueMm As Integer = 0
+            If TryGetFallbackOverallValueMm(intent, modelSize, valueMm) Then
+                Return valueMm.ToString() & " мм"
+            End If
+            Return String.Empty
         End If
 
         Select Case intent
@@ -2594,36 +2602,24 @@ Public Class AlbumBuilder
         valueMm = 0
         If modelSize Is Nothing OrElse Not modelSize.IsValid Then Return False
         Select Case intent
-            Case DimensionIntentId.OverallLength
+            Case DimensionIntentId.OverallLength, DimensionIntentId.ChordOrSpan
                 valueMm = modelSize.LengthMm
-                Return (valueMm > 0)
-            Case DimensionIntentId.ChordOrSpan
-                valueMm = modelSize.LengthMm
-                Return (valueMm > 0)
-            Case DimensionIntentId.OverallWidth
+            Case DimensionIntentId.OverallWidth, DimensionIntentId.OverallHeight
                 valueMm = modelSize.WidthMm
-                Return (valueMm > 0)
-            Case DimensionIntentId.OverallHeight
-                valueMm = modelSize.WidthMm
-                Return (valueMm > 0)
             Case DimensionIntentId.OverallThickness
                 valueMm = modelSize.ThicknessMm
-                Return (valueMm > 0)
             Case Else
                 Return False
         End Select
+        Return (valueMm > 0)
     End Function
 
     Private Function ResolveOverallPhysicalDimensionKind(intent As DimensionIntentId,
                                                          role As ViewRole) As String
         Select Case intent
-            Case DimensionIntentId.OverallLength
+            Case DimensionIntentId.OverallLength, DimensionIntentId.ChordOrSpan
                 Return "length"
-            Case DimensionIntentId.ChordOrSpan
-                Return "length"
-            Case DimensionIntentId.OverallWidth
-                Return "width"
-            Case DimensionIntentId.OverallHeight
+            Case DimensionIntentId.OverallWidth, DimensionIntentId.OverallHeight
                 Return "width"
             Case DimensionIntentId.OverallThickness
                 Return "thickness"
