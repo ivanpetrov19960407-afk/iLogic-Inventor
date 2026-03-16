@@ -141,6 +141,19 @@ End Sub
 Public Class AlbumBuilder
 
     Private ReadOnly _app As Inventor.Application
+    Private _lastBuildFailReason As SheetBuildFailReason = SheetBuildFailReason.None
+
+    Private Enum SheetBuildFailReason
+        None
+        ModelPathUnresolved
+        FileNotFound
+        DocumentOpenFailed
+        ProbeMeasureFailed
+        LayoutSelectionFailed
+        ViewPlacementFailed
+        LessThan2FinalViews
+        Unknown
+    End Enum
 
     ' Геометрия А3 СПДС
     Private Const A3_W_MM       As Double = 420.0
@@ -192,6 +205,13 @@ Public Class AlbumBuilder
 
         Dim okCount   As Integer = 0
         Dim failCount As Integer = 0
+        Dim modelPathUnresolvedCount As Integer = 0
+        Dim fileNotFoundCount As Integer = 0
+        Dim documentOpenFailedCount As Integer = 0
+        Dim probeMeasureFailedCount As Integer = 0
+        Dim layoutSelectionFailedCount As Integer = 0
+        Dim viewPlacementFailedCount As Integer = 0
+        Dim lessThan2FinalViewsCount As Integer = 0
 
         ' SilentOperation НЕ включаем глобально — иначе виды не обновляются!
         ' Точечно включается только вокруг Documents.Open внутри BuildOneSheet.
@@ -214,12 +234,29 @@ Public Class AlbumBuilder
                 If String.IsNullOrWhiteSpace(promptSheet) Then item.Prompts("SHEET") = (i + 1).ToString()
                 If String.IsNullOrWhiteSpace(promptSheets) Then item.Prompts("SHEETS") = items.Count.ToString()
 
-                Dim ok As Boolean = BuildOneSheet(doc, item, i + 1)
+                Dim excelRow As Integer = If(item.ExcelRow > 0, item.ExcelRow, i + 1)
+                Dim ok As Boolean = BuildOneSheet(doc, item, excelRow)
                 If ok Then
                     okCount += 1
                 Else
                     failCount += 1
-                    Debug.Print("WARN: лист не собран, строка Excel=" & (i + 1).ToString() & ", модель=" & item.ModelPath)
+                    Select Case _lastBuildFailReason
+                        Case SheetBuildFailReason.ModelPathUnresolved
+                            modelPathUnresolvedCount += 1
+                        Case SheetBuildFailReason.FileNotFound
+                            fileNotFoundCount += 1
+                        Case SheetBuildFailReason.DocumentOpenFailed
+                            documentOpenFailedCount += 1
+                        Case SheetBuildFailReason.ProbeMeasureFailed
+                            probeMeasureFailedCount += 1
+                        Case SheetBuildFailReason.LayoutSelectionFailed
+                            layoutSelectionFailedCount += 1
+                        Case SheetBuildFailReason.ViewPlacementFailed
+                            viewPlacementFailedCount += 1
+                        Case SheetBuildFailReason.LessThan2FinalViews
+                            lessThan2FinalViewsCount += 1
+                    End Select
+                    Debug.Print("WARN: лист не собран, строка Excel=" & excelRow.ToString() & ", причина=" & _lastBuildFailReason.ToString() & ", модель=" & item.ModelPath)
                 End If
             Next
 
@@ -235,7 +272,16 @@ Public Class AlbumBuilder
         End Try
 
         Dim msg As String = "Альбом собран: " & okCount & " листов."
-        If failCount > 0 Then msg &= vbCrLf & "Не собрано: " & failCount & " (модели не найдены или ошибка видов)."
+        If failCount > 0 Then
+            msg &= vbCrLf & "Не собрано: " & failCount
+            msg &= vbCrLf & "Пути не найдены: " & modelPathUnresolvedCount
+            msg &= vbCrLf & "Файлы не найдены: " & fileNotFoundCount
+            msg &= vbCrLf & "Не открылись модели: " & documentOpenFailedCount
+            msg &= vbCrLf & "Ошибки пробных видов: " & probeMeasureFailedCount
+            msg &= vbCrLf & "Ошибка подбора layout: " & layoutSelectionFailedCount
+            msg &= vbCrLf & "Ошибка размещения видов: " & viewPlacementFailedCount
+            msg &= vbCrLf & "Менее 2 итоговых видов: " & lessThan2FinalViewsCount
+        End If
         System.Windows.Forms.MessageBox.Show(msg, "Готово",
             System.Windows.Forms.MessageBoxButtons.OK,
             System.Windows.Forms.MessageBoxIcon.Information)
@@ -245,7 +291,14 @@ Public Class AlbumBuilder
     ' v3.6: borderDef/tbDef получаем заново внутри каждого вызова
     '       (COM RCW протухает после doc.Update2 если ссылка хранится снаружи)
     Private Function BuildOneSheet(doc As DrawingDocument, item As AlbumItem, rowIndex As Integer) As Boolean
+        _lastBuildFailReason = SheetBuildFailReason.None
+        If String.IsNullOrWhiteSpace(item.ModelPath) Then
+            _lastBuildFailReason = SheetBuildFailReason.ModelPathUnresolved
+            Debug.Print("WARN: путь модели не разрешён, строка Excel=" & rowIndex.ToString() & ", исходное значение='" & item.SourceModelRaw & "'")
+            Return False
+        End If
         If Not System.IO.File.Exists(item.ModelPath) Then
+            _lastBuildFailReason = SheetBuildFailReason.FileNotFound
             Debug.Print("WARN: модель не найдена, строка Excel=" & rowIndex.ToString() & ", путь=" & item.ModelPath)
             Return False
         End If
@@ -369,6 +422,7 @@ Public Class AlbumBuilder
                 End Try
             End If
             If modelDoc Is Nothing Then
+                _lastBuildFailReason = SheetBuildFailReason.DocumentOpenFailed
                 Debug.Print("WARN: не удалось открыть, строка Excel=" & rowIndex.ToString() & ", модель=" & item.ModelPath)
                 Try
                     sheet.Delete()
@@ -378,15 +432,23 @@ Public Class AlbumBuilder
             End If
 
             ' Виды через slot-based layout
-            Dim viewsOk As Boolean = PlaceViewsSlotBased(doc, sheet, modelDoc)
+            Dim viewsFailReason As SheetBuildFailReason = SheetBuildFailReason.None
+            Dim viewsOk As Boolean = PlaceViewsSlotBased(doc, sheet, modelDoc, viewsFailReason)
             If Not viewsOk Then
+                _lastBuildFailReason = viewsFailReason
                 Debug.Print("WARN: не удалось построить виды, строка Excel=" & rowIndex.ToString() & ", лист=" & sheetName)
+                Try
+                    sheet.Delete()
+                Catch
+                End Try
+                Return False
             End If
             doc.Update2(True)
 
             Dim finalViewCount As Integer = sheet.DrawingViews.Count
             Debug.Print("INFO final view count on sheet '" & sheetName & "': " & finalViewCount.ToString())
             If finalViewCount < 2 Then
+                _lastBuildFailReason = SheetBuildFailReason.LessThan2FinalViews
                 Debug.Print("WARN: менее 2 видов на листе: " & sheetName)
                 Try
                     sheet.Delete()
@@ -395,9 +457,11 @@ Public Class AlbumBuilder
                 Return False
             End If
 
+            _lastBuildFailReason = SheetBuildFailReason.None
             Return True
 
         Catch ex As Exception
+            _lastBuildFailReason = SheetBuildFailReason.Unknown
             Debug.Print("ERROR: BuildOneSheet, строка Excel=" & rowIndex.ToString() & ", модель=" & item.ModelPath & ": " & ex.Message)
             If sheet IsNot Nothing Then
                 Try
@@ -419,7 +483,8 @@ Public Class AlbumBuilder
     ' ================================================================
     '  ADAPTIVE TECH LAYOUT
     ' ================================================================
-    Private Function PlaceViewsSlotBased(doc As DrawingDocument, sheet As Sheet, modelDoc As Document) As Boolean
+    Private Function PlaceViewsSlotBased(doc As DrawingDocument, sheet As Sheet, modelDoc As Document, ByRef failReason As SheetBuildFailReason) As Boolean
+        failReason = SheetBuildFailReason.None
         Dim safe As SlotRect = GetSheetSafeRect(doc, sheet)
         Dim gap As Double = Cm(doc, GAP_MM)
 
@@ -438,6 +503,7 @@ Public Class AlbumBuilder
         End If
         Dim all2D As List(Of ViewMeasure) = BuildAll2DCandidates(mFront, mBack, mTop, mLeft, mRight)
         If all2D Is Nothing OrElse all2D.Count < 2 Then
+            failReason = SheetBuildFailReason.ProbeMeasureFailed
             Debug.Print("WARN: недостаточно 2D-кандидатов для подбора layout")
             Return False
         End If
@@ -456,6 +522,7 @@ Public Class AlbumBuilder
 
         Dim best As LayoutPlan = EvaluateBestTemplate(templates, descriptor, roleMap)
         If best Is Nothing Then
+            failReason = SheetBuildFailReason.LayoutSelectionFailed
             Debug.Print("WARN: не найден корректный layout визуализации")
             Return False
         End If
@@ -464,7 +531,17 @@ Public Class AlbumBuilder
 
         Dim placedViews As Dictionary(Of ViewRole, DrawingView) = PlaceViewsByTemplate(sheet, modelDoc, best, roleMap)
         If placedViews Is Nothing OrElse placedViews.Count = 0 Then
+            failReason = SheetBuildFailReason.ViewPlacementFailed
             Debug.Print("WARN: не удалось разместить виды по template")
+            Return False
+        End If
+
+        Dim finalOrthogonal As Integer = 0
+        If placedViews.ContainsKey(best.MainRole) Then finalOrthogonal += 1
+        If placedViews.ContainsKey(best.AuxRole) Then finalOrthogonal += 1
+        If finalOrthogonal < 2 Then
+            failReason = SheetBuildFailReason.LessThan2FinalViews
+            Debug.Print("WARN: после размещения менее 2 ортогональных видов")
             Return False
         End If
 
@@ -930,7 +1007,7 @@ Public Class AlbumBuilder
         Dim mainM As ViewMeasure = roleMap.GetMeasure(t.MainRole)
         Dim auxM As ViewMeasure = roleMap.GetMeasure(t.AuxRole)
         Dim isoM As ViewMeasure = roleMap.GetMeasure(t.IsoRole)
-        If mainM Is Nothing OrElse auxM Is Nothing OrElse isoM Is Nothing Then Return Nothing
+        If mainM Is Nothing OrElse auxM Is Nothing Then Return Nothing
 
         Dim p As New LayoutPlan()
         p.TemplateName = t.TemplateName
@@ -946,8 +1023,11 @@ Public Class AlbumBuilder
 
         p.MainFit = ScaleToFit(p.MainSlot, mainM, ORTHO_SCALE_MARGIN)
         p.Aux1Fit = ScaleToFit(p.Aux1Slot, auxM, ORTHO_SCALE_MARGIN)
-        p.Aux2Fit = ScaleToFit(p.Aux2Slot, isoM, ISO_SCALE_MARGIN)
-        If p.MainFit Is Nothing OrElse p.Aux1Fit Is Nothing OrElse p.Aux2Fit Is Nothing Then Return Nothing
+        If isoM IsNot Nothing Then
+            p.Aux2Fit = ScaleToFit(p.Aux2Slot, isoM, ISO_SCALE_MARGIN)
+        End If
+        If p.MainFit Is Nothing OrElse p.Aux1Fit Is Nothing Then Return Nothing
+        If isoM IsNot Nothing AndAlso p.Aux2Fit Is Nothing Then Return Nothing
 
         Dim mainFill As Double = (p.MainFit.ProjectedW * p.MainFit.ProjectedH) / Math.Max(0.0001, RectW(p.MainSlot) * RectH(p.MainSlot))
         Dim auxFill As Double = (p.Aux1Fit.ProjectedW * p.Aux1Fit.ProjectedH) / Math.Max(0.0001, RectW(p.Aux1Slot) * RectH(p.Aux1Slot))
@@ -3110,6 +3190,8 @@ End Enum
 ' ================================================================
 Public Class AlbumItem
     Public ModelPath As String = String.Empty
+    Public SourceModelRaw As String = String.Empty
+    Public ExcelRow As Integer = 0
     Public Prompts As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
 End Class
 
@@ -3136,7 +3218,7 @@ Public Class XlsxReader
                 wb = xl.Workbooks.Open(excelPath)
             Catch ex As Exception
                 System.Windows.Forms.MessageBox.Show(
-                    "Не удалось открыть Excel:\n" & ex.Message,
+                    "Не удалось открыть Excel:" & vbCrLf & ex.Message,
                     "Ошибка XlsxReader")
                 Try
                     xl.Quit()
@@ -3167,44 +3249,98 @@ Public Class XlsxReader
                 Return result
             End If
 
-            ' Row 1 = headers, Row 2+ = data
             Dim lastRow As Integer = CInt(ws.UsedRange.Rows.Count)
             Dim lastCol As Integer = CInt(ws.UsedRange.Columns.Count)
-            Dim headers As New List(Of String)()
-            For c As Integer = 1 To lastCol
-                Dim hdr As String = CStr(ws.Cells(1, c).Value)
-                headers.Add(If(hdr Is Nothing, String.Empty, hdr.Trim().ToUpperInvariant()))
+            Dim headerRow As Integer = 0
+            Dim canonicalByColumn As New Dictionary(Of Integer, String)()
+            For r As Integer = 1 To Math.Min(10, lastRow)
+                Dim rowMap As New Dictionary(Of Integer, String)()
+                Dim hasModelPath As Boolean = False
+                For c As Integer = 1 To lastCol
+                    Dim raw As String = SafeCellText(ws.Cells(r, c).Value)
+                    Dim canonical As String = ResolveHeaderAlias(raw)
+                    If Not String.IsNullOrWhiteSpace(canonical) Then
+                        rowMap(c) = canonical
+                        If String.Equals(canonical, "MODEL_PATH", StringComparison.OrdinalIgnoreCase) Then
+                            hasModelPath = True
+                        End If
+                    End If
+                Next
+                If hasModelPath Then
+                    headerRow = r
+                    canonicalByColumn = rowMap
+                    Exit For
+                End If
             Next
 
-            Dim modelIdx As Integer = headers.IndexOf("MODEL") + 1
-            If modelIdx = 0 Then modelIdx = headers.IndexOf("MODELPATH") + 1
-            If modelIdx = 0 Then modelIdx = 1 ' Fallback to column A
+            If headerRow = 0 Then
+                Dim hdrErr As String = "Не найден заголовок MODEL_PATH (или алиасы MODELPATH/MODEL/P/ПУТЬ/ФАЙЛ) в первых 10 строках." & vbCrLf &
+                                       "Файл: " & excelPath & vbCrLf &
+                                       "Лист: " & sheetTab
+                Debug.Print("XlsxReader.Load: " & hdrErr)
+                System.Windows.Forms.MessageBox.Show(hdrErr, "Ошибка XlsxReader")
+                Try
+                    wb.Close(False)
+                Catch
+                End Try
+                Try
+                    xl.Quit()
+                Catch
+                End Try
+                Return result
+            End If
 
-            For r As Integer = 2 To lastRow
-                Dim cellVal As Object = ws.Cells(r, modelIdx).Value
-                If cellVal Is Nothing Then Continue For
-                Dim modelRaw As String = CStr(cellVal).Trim()
+            Dim modelIdx As Integer = 0
+            For Each kv As KeyValuePair(Of Integer, String) In canonicalByColumn
+                If String.Equals(kv.Value, "MODEL_PATH", StringComparison.OrdinalIgnoreCase) Then
+                    modelIdx = kv.Key
+                    Exit For
+                End If
+            Next
+            If modelIdx = 0 Then
+                Dim idxErr As String = "В строке заголовков не определена колонка MODEL_PATH."
+                Debug.Print("XlsxReader.Load: " & idxErr)
+                System.Windows.Forms.MessageBox.Show(idxErr, "Ошибка XlsxReader")
+                Try
+                    wb.Close(False)
+                Catch
+                End Try
+                Try
+                    xl.Quit()
+                Catch
+                End Try
+                Return result
+            End If
+
+            For r As Integer = headerRow + 1 To lastRow
+                Dim modelRaw As String = SafeCellText(ws.Cells(r, modelIdx).Value)
                 If String.IsNullOrWhiteSpace(modelRaw) Then Continue For
 
-                Dim modelPath As String = modelRaw
-                If Not System.IO.Path.IsPathRooted(modelPath) Then
-                    modelPath = System.IO.Path.Combine(workspacePath, modelPath)
-                End If
-                If Not modelPath.EndsWith(".ipt", StringComparison.OrdinalIgnoreCase) Then
-                    modelPath &= ".ipt"
-                End If
+                Dim tried As New List(Of String)()
+                Dim modelPath As String = ResolveModelPath(modelRaw, workspacePath, excelPath, tried)
 
                 Dim item As New AlbumItem()
+                item.ExcelRow = r
+                item.SourceModelRaw = modelRaw
                 item.ModelPath = modelPath
 
                 For c As Integer = 1 To lastCol
-                    Dim colName As String = headers(c - 1)
-                    If String.IsNullOrWhiteSpace(colName) Then Continue For
-                    Dim v As Object = ws.Cells(r, c).Value
-                    If v IsNot Nothing Then
-                        item.Prompts(colName) = CStr(v).Trim()
+                    Dim canonical As String = String.Empty
+                    If canonicalByColumn.ContainsKey(c) Then
+                        canonical = canonicalByColumn(c)
+                    End If
+                    If String.IsNullOrWhiteSpace(canonical) Then Continue For
+
+                    Dim v As String = SafeCellText(ws.Cells(r, c).Value)
+                    If Not String.IsNullOrWhiteSpace(v) Then
+                        item.Prompts(canonical) = v
                     End If
                 Next
+
+                If String.IsNullOrWhiteSpace(modelPath) Then
+                    Debug.Print("XlsxReader.Load unresolved: row=" & r.ToString() & "; source='" & modelRaw & "'; tried=" & String.Join(" | ", tried.ToArray()))
+                End If
+
                 result.Add(item)
             Next
 
@@ -3221,4 +3357,107 @@ Public Class XlsxReader
         End Try
         Return result
     End Function
+
+    Private Shared Function SafeCellText(v As Object) As String
+        If v Is Nothing Then Return String.Empty
+        Dim s As String = CStr(v)
+        If s Is Nothing Then Return String.Empty
+        Return s.Trim()
+    End Function
+
+    Private Shared Function NormalizeHeader(hdr As String) As String
+        If hdr Is Nothing Then Return String.Empty
+        Dim u As String = hdr.Trim().ToUpperInvariant()
+        u = u.Replace(" ", "")
+        u = u.Replace("_", "")
+        u = u.Replace("-", "")
+        u = u.Replace(".", "")
+        Return u
+    End Function
+
+    Private Shared Function ResolveHeaderAlias(hdr As String) As String
+        Dim n As String = NormalizeHeader(hdr)
+        If String.IsNullOrWhiteSpace(n) Then Return String.Empty
+
+        Select Case n
+            Case "MODELPATH", "MODEL", "P", "ПУТЬ", "ФАЙЛ"
+                Return "MODEL_PATH"
+            Case "CODE", "ШИФР", "АРТИКУЛ", "ОБОЗНАЧЕНИЕ"
+                Return "CODE"
+            Case "PROJECTNAME", "PROJECT", "ОБЪЕКТ", "ПРОЕКТ"
+                Return "PROJECT_NAME"
+            Case "DRAWINGNAME", "TITLE", "НАИМЕНОВАНИЕ"
+                Return "DRAWING_NAME"
+            Case "ORGNAME", "ОРГАНИЗАЦИЯ", "КОМПАНИЯ"
+                Return "ORG_NAME"
+            Case "SHEET", "ЛИСТ"
+                Return "SHEET"
+            Case "SHEETS", "ЛИСТОВ"
+                Return "SHEETS"
+            Case "STAGE", "СТАДИЯ"
+                Return "STAGE"
+        End Select
+
+        Return String.Empty
+    End Function
+
+    Private Shared Function ResolveModelPath(inputPath As String,
+                                             workspacePath As String,
+                                             excelPath As String,
+                                             ByRef triedCandidates As List(Of String)) As String
+        triedCandidates = New List(Of String)()
+        Dim raw As String = If(inputPath, String.Empty).Trim()
+        If String.IsNullOrWhiteSpace(raw) Then Return String.Empty
+
+        Dim hasExt As Boolean = Not String.IsNullOrWhiteSpace(System.IO.Path.GetExtension(raw))
+
+        Dim candidates As New List(Of String)()
+        AddUniqueCandidate(candidates, raw)
+
+        If Not System.IO.Path.IsPathRooted(raw) Then
+            If Not String.IsNullOrWhiteSpace(workspacePath) Then
+                AddUniqueCandidate(candidates, System.IO.Path.Combine(workspacePath, raw))
+            End If
+
+            Dim excelDir As String = String.Empty
+            Try
+                excelDir = System.IO.Path.GetDirectoryName(excelPath)
+            Catch
+            End Try
+            If Not String.IsNullOrWhiteSpace(excelDir) Then
+                AddUniqueCandidate(candidates, System.IO.Path.Combine(excelDir, raw))
+            End If
+        End If
+
+        If Not hasExt Then
+            Dim snapshot As List(Of String) = New List(Of String)(candidates)
+            For Each c As String In snapshot
+                AddUniqueCandidate(candidates, c & ".ipt")
+            Next
+        End If
+
+        For Each c As String In candidates
+            triedCandidates.Add(c)
+            Try
+                If System.IO.File.Exists(c) Then
+                    Return c
+                End If
+            Catch
+            End Try
+        Next
+
+        Return String.Empty
+    End Function
+
+    Private Shared Sub AddUniqueCandidate(list As List(Of String), candidate As String)
+        If list Is Nothing Then Return
+        If String.IsNullOrWhiteSpace(candidate) Then Return
+        Dim c As String = candidate.Trim()
+        For Each existing As String In list
+            If String.Equals(existing, c, StringComparison.OrdinalIgnoreCase) Then
+                Return
+            End If
+        Next
+        list.Add(c)
+    End Sub
 End Class
