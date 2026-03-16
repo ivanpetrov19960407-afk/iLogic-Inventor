@@ -2876,7 +2876,7 @@ Public Class AlbumBuilder
                                       timeoutMs As Integer,
                                       Optional requirePrecise As Boolean = False) As Boolean
         If v Is Nothing Then Return False
-        Dim startTick As Integer = Environment.TickCount
+        Dim startTick As Integer = System.Environment.TickCount
         Do
             Try
                 If v IsNot Nothing AndAlso v.IsUpdateComplete Then
@@ -2900,7 +2900,7 @@ Public Class AlbumBuilder
 
             System.Windows.Forms.Application.DoEvents()
             System.Threading.Thread.Sleep(50)
-        Loop While (Environment.TickCount - startTick) < timeoutMs
+        Loop While (System.Environment.TickCount - startTick) < timeoutMs
 
         If requirePrecise Then
             Try
