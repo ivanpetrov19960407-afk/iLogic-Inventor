@@ -1485,17 +1485,23 @@ Public Class AlbumBuilder
                                              counters As Dictionary(Of String, Integer),
                                              viewKey As String,
                                              globalDimensionKeys As HashSet(Of String)) As Integer
-        Dim axis As DimensionAxis = ResolveOverallIntentAxis(intent, role, v, measure)
-        Dim addH As Boolean = (axis = DimensionAxis.Horizontal)
-        Dim addV As Boolean = (axis = DimensionAxis.Vertical)
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
 
-        Dim dedupeScope As String = BuildGlobalDimensionScope(viewKey, v)
-        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, False, False, Integer.MaxValue, globalDimensionKeys, dedupeScope)
-        If added = 0 Then
+        Dim added As Integer = 0
+        If modelSize IsNot Nothing AndAlso modelSize.IsValid Then
             If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, role, measure, modelSize, noteKeys) Then added = 1
+        Else
+            Dim axis As DimensionAxis = ResolveOverallIntentAxis(intent, role, v, measure)
+            Dim addH As Boolean = (axis = DimensionAxis.Horizontal)
+            Dim addV As Boolean = (axis = DimensionAxis.Vertical)
+            Dim dedupeScope As String = BuildGlobalDimensionScope(viewKey, v)
+            added = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, False, False, Integer.MaxValue, globalDimensionKeys, dedupeScope)
+            If added = 0 Then
+                If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, role, measure, modelSize, noteKeys) Then added = 1
+            End If
         End If
+
         If added > 0 Then
             usedKeys.Add(dedupeKey)
             counters(viewKey) = GetCounter(counters, viewKey) + added
