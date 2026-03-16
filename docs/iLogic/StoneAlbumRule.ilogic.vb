@@ -384,8 +384,10 @@ Public Class AlbumBuilder
             End If
             doc.Update2(True)
 
-            If sheet.DrawingViews.Count < 3 Then
-                Debug.Print("WARN: менее 3 видов на листе: " & sheetName)
+            Dim finalViewCount As Integer = sheet.DrawingViews.Count
+            Debug.Print("INFO final view count on sheet '" & sheetName & "': " & finalViewCount.ToString())
+            If finalViewCount < 2 Then
+                Debug.Print("WARN: менее 2 видов на листе: " & sheetName)
                 Try
                     sheet.Delete()
                 Catch
@@ -427,10 +429,12 @@ Public Class AlbumBuilder
         Dim mLeft As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kLeftViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "LEFT", "Вид слева")
         Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "RIGHT", "Вид справа")
         Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle, "ISO", "Изометрия")
-
-        If ALBUM_MODE_VISUAL AndAlso mIso Is Nothing Then
-            Debug.Print("WARN: не удалось измерить изометрический shaded вид")
-            Return False
+        If mIso Is Nothing Then
+            Debug.Print("WARN: iso shaded failed, trying hidden-line fallback")
+            mIso = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "ISO", "Изометрия")
+        End If
+        If mIso Is Nothing Then
+            Debug.Print("WARN: iso completely unavailable, continue without iso")
         End If
         Dim all2D As List(Of ViewMeasure) = BuildAll2DCandidates(mFront, mBack, mTop, mLeft, mRight)
         If all2D Is Nothing OrElse all2D.Count < 2 Then
@@ -471,8 +475,14 @@ Public Class AlbumBuilder
         If ADD_VIEW_DIMENSIONS Then
             Dim dimPlan As DimensionPlan = BuildDimensionPlan(descriptor, roleMap)
             DebugPrintDimensionPlan(dimPlan)
-            ApplyDimensionPlan(doc, sheet, placedViews, roleMap, descriptor, dimPlan)
+            Try
+                ApplyDimensionPlan(doc, sheet, placedViews, roleMap, descriptor, dimPlan)
+            Catch ex As Exception
+                Debug.Print("WARN dimensioning failed: " & ex.Message & "; views preserved")
+            End Try
         End If
+
+        Debug.Print("INFO final view count on sheet '" & sheet.Name & "': " & sheet.DrawingViews.Count.ToString())
 
         Return True
     End Function
@@ -976,14 +986,19 @@ Public Class AlbumBuilder
 
         Dim mainV As DrawingView = PlaceViewInSlot(sheet, modelDoc, plan.MainMeasure, plan.MainFit, plan.MainSlot)
         Dim auxV As DrawingView = PlaceViewInSlot(sheet, modelDoc, plan.Aux1Measure, plan.Aux1Fit, plan.Aux1Slot)
-        Dim isoV As DrawingView = PlaceViewInSlot(sheet, modelDoc, plan.Aux2Measure, plan.Aux2Fit, plan.Aux2Slot)
+        Dim isoV As DrawingView = Nothing
+        If plan.Aux2Measure IsNot Nothing AndAlso plan.Aux2Fit IsNot Nothing Then
+            isoV = PlaceViewInSlot(sheet, modelDoc, plan.Aux2Measure, plan.Aux2Fit, plan.Aux2Slot)
+        End If
 
-        If mainV Is Nothing OrElse auxV Is Nothing OrElse isoV Is Nothing Then Return Nothing
+        If mainV Is Nothing OrElse auxV Is Nothing Then Return Nothing
 
         ' Store by template role
         placed(plan.MainRole) = mainV
         placed(plan.AuxRole) = auxV
-        placed(plan.IsoRole) = isoV
+        If isoV IsNot Nothing Then
+            placed(plan.IsoRole) = isoV
+        End If
 
         ' v3.20: Also register all semantic aliases from roleMap so that
         ' ApplyDimensionPlan can find e.g. PlanContour, ThicknessView, SlopeView
@@ -999,7 +1014,7 @@ Public Class AlbumBuilder
                     targetView = mainV
                 ElseIf kv.Value.Key = plan.Aux1Measure.Key Then
                     targetView = auxV
-                ElseIf kv.Value.Key = plan.Aux2Measure.Key Then
+                ElseIf plan.Aux2Measure IsNot Nothing AndAlso isoV IsNot Nothing AndAlso kv.Value.Key = plan.Aux2Measure.Key Then
                     targetView = isoV
                 End If
                 If targetView IsNot Nothing AndAlso Not placed.ContainsKey(kv.Key) Then
@@ -2537,12 +2552,18 @@ Public Class AlbumBuilder
             Dim cy As Double = (slot.B + slot.T) / 2.0
             Dim pt As Point2d = _app.TransientGeometry.CreatePoint2d(cx, cy)
 
-            Dim v As DrawingView = sheet.DrawingViews.AddBaseView(
-                TryCast(modelDoc, Inventor.Document),
-                pt,
-                fit.Scale,
-                measure.Orientation,
-                measure.Style)
+            Dim fallbackStyle As DrawingViewStyleEnum = measure.Style
+            If measure.Orientation = ViewOrientationTypeEnum.kIsoTopRightViewOrientation AndAlso measure.Style = DrawingViewStyleEnum.kShadedDrawingViewStyle Then
+                fallbackStyle = DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle
+            End If
+
+            Dim v As DrawingView = TryCreateBaseView(sheet,
+                                                     modelDoc,
+                                                     pt,
+                                                     fit.Scale,
+                                                     measure.Orientation,
+                                                     measure.Style,
+                                                     fallbackStyle)
 
             If v Is Nothing Then Return Nothing
 
@@ -2570,10 +2591,14 @@ Public Class AlbumBuilder
                                  caption As String) As ViewMeasure
         Dim probeView As DrawingView = Nothing
         Try
-            Dim pt As Point2d = _app.TransientGeometry.CreatePoint2d(-9999, -9999)
-            probeView = sheet.DrawingViews.AddBaseView(
-                TryCast(modelDoc, Inventor.Document),
-                pt, PROBE_SCALE, orientation, style)
+            Dim pt As Point2d = GetProbePoint(TryCast(sheet.Parent, DrawingDocument), sheet)
+            probeView = TryCreateBaseView(sheet,
+                                          modelDoc,
+                                          pt,
+                                          PROBE_SCALE,
+                                          orientation,
+                                          style,
+                                          style)
             If probeView Is Nothing Then Return Nothing
 
             Dim m As New ViewMeasure()
@@ -2658,6 +2683,7 @@ Public Class AlbumBuilder
             End If
             Return m
         Catch ex As Exception
+            Debug.Print("WARN probe measure failed for orientation/style " & key & ": " & ex.Message)
             Debug.Print("WARN MeasureView " & key & ": " & ex.Message)
         Finally
             If probeView IsNot Nothing Then
@@ -2665,6 +2691,45 @@ Public Class AlbumBuilder
                     probeView.Delete()
                 Catch
                 End Try
+            End If
+        End Try
+        Return Nothing
+    End Function
+
+    Private Function GetProbePoint(doc As DrawingDocument, sheet As Sheet) As Point2d
+        Dim safe As SlotRect = GetSheetSafeRect(doc, sheet)
+        Dim px As Double = safe.L + RectW(safe) * 0.06
+        Dim py As Double = safe.B + RectH(safe) * 0.06
+        Return _app.TransientGeometry.CreatePoint2d(px, py)
+    End Function
+
+    Private Function TryCreateBaseView(sheet As Sheet,
+                                       modelDoc As Document,
+                                       pt As Point2d,
+                                       scale As Double,
+                                       orientation As ViewOrientationTypeEnum,
+                                       primaryStyle As DrawingViewStyleEnum,
+                                       fallbackStyle As DrawingViewStyleEnum) As DrawingView
+        Try
+            Return sheet.DrawingViews.AddBaseView(TryCast(modelDoc, Inventor.Document),
+                                                  pt,
+                                                  scale,
+                                                  orientation,
+                                                  primaryStyle)
+        Catch ex As Exception
+            If primaryStyle <> fallbackStyle Then
+                Debug.Print("WARN base view style " & primaryStyle.ToString() & " failed, fallback " & fallbackStyle.ToString() & ": " & ex.Message)
+                Try
+                    Return sheet.DrawingViews.AddBaseView(TryCast(modelDoc, Inventor.Document),
+                                                          pt,
+                                                          scale,
+                                                          orientation,
+                                                          fallbackStyle)
+                Catch ex2 As Exception
+                    Debug.Print("WARN base view fallback failed " & orientation.ToString() & ": " & ex2.Message)
+                End Try
+            Else
+                Debug.Print("WARN base view create failed " & orientation.ToString() & "/" & primaryStyle.ToString() & ": " & ex.Message)
             End If
         End Try
         Return Nothing
