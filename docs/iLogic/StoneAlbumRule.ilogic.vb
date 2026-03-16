@@ -1489,7 +1489,8 @@ Public Class AlbumBuilder
         If usedKeys.Contains(dedupeKey) Then Return 0
 
         Dim added As Integer = 0
-        If modelSize IsNot Nothing AndAlso modelSize.IsValid Then
+        Dim overallKind As String = ResolveOverallPhysicalDimensionKind(intent, role)
+        If overallKind <> "unknown" AndAlso modelSize IsNot Nothing AndAlso modelSize.IsValid Then
             If AddFallbackDimensionNotes(doc, sheet, v, slot, intent, role, measure, modelSize, noteKeys) Then added = 1
         Else
             Dim axis As DimensionAxis = ResolveOverallIntentAxis(intent, role, v, measure)
@@ -2570,7 +2571,8 @@ Public Class AlbumBuilder
                                              role As ViewRole,
                                              modelSize As ModelOverallExtents) As String
         Dim valueMm As Integer = 0
-        If TryGetFallbackOverallValueMm(intent, modelSize, valueMm) Then
+        Dim overallKind As String = ResolveOverallPhysicalDimensionKind(intent, role)
+        If overallKind <> "unknown" AndAlso TryGetFallbackOverallValueMm(intent, modelSize, valueMm) Then
             Return valueMm.ToString() & " мм"
         End If
 
@@ -2592,10 +2594,16 @@ Public Class AlbumBuilder
         valueMm = 0
         If modelSize Is Nothing OrElse Not modelSize.IsValid Then Return False
         Select Case intent
-            Case DimensionIntentId.OverallLength, DimensionIntentId.ChordOrSpan
+            Case DimensionIntentId.OverallLength
                 valueMm = modelSize.LengthMm
                 Return (valueMm > 0)
-            Case DimensionIntentId.OverallWidth, DimensionIntentId.OverallHeight
+            Case DimensionIntentId.ChordOrSpan
+                valueMm = modelSize.LengthMm
+                Return (valueMm > 0)
+            Case DimensionIntentId.OverallWidth
+                valueMm = modelSize.WidthMm
+                Return (valueMm > 0)
+            Case DimensionIntentId.OverallHeight
                 valueMm = modelSize.WidthMm
                 Return (valueMm > 0)
             Case DimensionIntentId.OverallThickness
@@ -2609,12 +2617,16 @@ Public Class AlbumBuilder
     Private Function ResolveOverallPhysicalDimensionKind(intent As DimensionIntentId,
                                                          role As ViewRole) As String
         Select Case intent
-            Case DimensionIntentId.OverallLength, DimensionIntentId.ChordOrSpan
+            Case DimensionIntentId.OverallLength
                 Return "length"
+            Case DimensionIntentId.ChordOrSpan
+                Return "length"
+            Case DimensionIntentId.OverallWidth
+                Return "width"
+            Case DimensionIntentId.OverallHeight
+                Return "width"
             Case DimensionIntentId.OverallThickness
                 Return "thickness"
-            Case DimensionIntentId.OverallWidth, DimensionIntentId.OverallHeight
-                Return "width"
             Case Else
                 Return "unknown"
         End Select
