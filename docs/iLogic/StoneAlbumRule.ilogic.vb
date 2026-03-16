@@ -495,10 +495,6 @@ Public Class AlbumBuilder
         Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "RIGHT", "Вид справа")
         Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle, "ISO", "Изометрия")
         If mIso Is Nothing Then
-            Debug.Print("WARN: iso shaded failed, trying hidden-line fallback")
-            mIso = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "ISO", "Изометрия")
-        End If
-        If mIso Is Nothing Then
             Debug.Print("WARN: iso completely unavailable, continue without iso")
         End If
         Dim all2D As List(Of ViewMeasure) = BuildAll2DCandidates(mFront, mBack, mTop, mLeft, mRight)
@@ -2670,101 +2666,124 @@ Public Class AlbumBuilder
                                  key As String,
                                  caption As String) As ViewMeasure
         Dim probeView As DrawingView = Nothing
+        Dim createdStyle As DrawingViewStyleEnum = style
+        Dim modelPath As String = GetModelPathForLog(modelDoc)
+        Dim orientationLabel As String = orientation.ToString()
+        Dim doc As DrawingDocument = TryCast(sheet.Parent, DrawingDocument)
         Try
-            Dim pt As Point2d = GetProbePoint(TryCast(sheet.Parent, DrawingDocument), sheet)
-            probeView = TryCreateBaseView(sheet,
-                                          modelDoc,
-                                          pt,
-                                          PROBE_SCALE,
-                                          orientation,
-                                          style,
-                                          style)
-            If probeView Is Nothing Then Return Nothing
+            Dim pt As Point2d = GetProbePoint(doc, sheet)
+            probeView = TryCreateProbeBaseView(sheet,
+                                               modelDoc,
+                                               pt,
+                                               PROBE_SCALE,
+                                               orientation,
+                                               style,
+                                               key,
+                                               modelPath,
+                                               createdStyle)
+            If probeView Is Nothing Then
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & style.ToString() & " stage=create error=base view was not created")
+                Return Nothing
+            End If
+
+            Try
+                If doc IsNot Nothing Then doc.Update2(True)
+            Catch exUpdate As Exception
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=update error=" & exUpdate.Message)
+            End Try
 
             Dim m As New ViewMeasure()
             m.Key = key
             m.Caption = caption
             m.Orientation = orientation
-            m.Style = style
-            m.UnitW = probeView.Width / PROBE_SCALE
-            m.UnitH = probeView.Height / PROBE_SCALE
-            m.BoundingArea = m.UnitW * m.UnitH
-            If m.UnitH > 0 Then
-                m.AspectRatio = m.UnitW / m.UnitH
-            Else
-                m.AspectRatio = 1.0
-            End If
+            m.Style = createdStyle
+            Try
+                m.UnitW = probeView.Width / PROBE_SCALE
+                m.UnitH = probeView.Height / PROBE_SCALE
+                m.BoundingArea = m.UnitW * m.UnitH
+                If m.UnitH > 0 Then
+                    m.AspectRatio = m.UnitW / m.UnitH
+                Else
+                    m.AspectRatio = 1.0
+                End If
+            Catch exSize As Exception
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=measure-size error=" & exSize.Message)
+                Return Nothing
+            End Try
 
-            ' Curve analysis
-            Dim curves As DrawingCurvesEnumerator = probeView.DrawingCurves
-            If curves IsNot Nothing Then
-                Dim tol As Double = Math.Max(0.002, Math.Min(probeView.Width, probeView.Height) * 0.04)
-                Dim totalCurves As Integer = 0
-                Dim arcCount As Integer = 0
-                Dim circleCount As Integer = 0
-                Dim slopeCount As Integer = 0
-                Dim nonAxisEdge As Integer = 0
-                Dim innerCount As Integer = 0
-                Dim hBias As Double = 0
-                Dim vBias As Double = 0
-                Dim longEdgeBias As Double = 0
-                Dim totalSlope As Double = 0
-                Dim planComplexity As Double = 0
-                Dim profileComplexity As Double = 0
+            ' Curve analysis should not abort successful size probe.
+            Try
+                Dim curves As DrawingCurvesEnumerator = probeView.DrawingCurves
+                If curves IsNot Nothing Then
+                    Dim tol As Double = Math.Max(0.002, Math.Min(probeView.Width, probeView.Height) * 0.04)
+                    Dim totalCurves As Integer = 0
+                    Dim arcCount As Integer = 0
+                    Dim circleCount As Integer = 0
+                    Dim slopeCount As Integer = 0
+                    Dim nonAxisEdge As Integer = 0
+                    Dim innerCount As Integer = 0
+                    Dim hBias As Double = 0
+                    Dim vBias As Double = 0
+                    Dim longEdgeBias As Double = 0
+                    Dim totalSlope As Double = 0
+                    Dim planComplexity As Double = 0
+                    Dim profileComplexity As Double = 0
 
-                For i As Integer = 1 To curves.Count
-                    Dim c As DrawingCurve = curves.Item(i)
-                    If c Is Nothing Then Continue For
-                    totalCurves += 1
-                    Dim rb As Box2d = c.RangeBox
-                    Dim dx As Double = Math.Abs(rb.MaxPoint.X - rb.MinPoint.X)
-                    Dim dy As Double = Math.Abs(rb.MaxPoint.Y - rb.MinPoint.Y)
-                    Dim outer As Boolean = (Math.Abs(rb.MinPoint.X - probeView.Left) <= tol OrElse
-                                            Math.Abs(rb.MaxPoint.X - (probeView.Left + probeView.Width)) <= tol OrElse
-                                            Math.Abs(rb.MinPoint.Y - (probeView.Top - probeView.Height)) <= tol OrElse
-                                            Math.Abs(rb.MaxPoint.Y - probeView.Top) <= tol)
-                    If Not outer Then innerCount += 1
+                    For i As Integer = 1 To curves.Count
+                        Dim c As DrawingCurve = curves.Item(i)
+                        If c Is Nothing Then Continue For
+                        totalCurves += 1
+                        Dim rb As Box2d = c.RangeBox
+                        Dim dx As Double = Math.Abs(rb.MaxPoint.X - rb.MinPoint.X)
+                        Dim dy As Double = Math.Abs(rb.MaxPoint.Y - rb.MinPoint.Y)
+                        Dim outer As Boolean = (Math.Abs(rb.MinPoint.X - probeView.Left) <= tol OrElse
+                                                Math.Abs(rb.MaxPoint.X - (probeView.Left + probeView.Width)) <= tol OrElse
+                                                Math.Abs(rb.MinPoint.Y - (probeView.Top - probeView.Height)) <= tol OrElse
+                                                Math.Abs(rb.MaxPoint.Y - probeView.Top) <= tol)
+                        If Not outer Then innerCount += 1
 
-                    If c.CurveType = Curve2dTypeEnum.kCircularArcCurve2d Then
-                        arcCount += 1
-                        nonAxisEdge += 1
-                        totalSlope += 0.15
-                        profileComplexity += 0.08
-                    ElseIf c.CurveType = Curve2dTypeEnum.kCircleCurve2d Then
-                        circleCount += 1
-                        nonAxisEdge += 1
-                    ElseIf dx >= dy * 2.2 Then
-                        hBias += 1
-                        longEdgeBias += dx
-                        If outer Then planComplexity += 0.04
-                    ElseIf dy >= dx * 2.2 Then
-                        vBias += 1
-                        If outer Then profileComplexity += 0.04
-                    Else
-                        slopeCount += 1
-                        nonAxisEdge += 1
-                        Dim ang As Double = Math.Atan2(dy, dx)
-                        Dim slopeContrib As Double = Math.Abs(Math.Sin(2 * ang))
-                        totalSlope += slopeContrib
-                        profileComplexity += slopeContrib * 0.25
-                    End If
-                Next
-                m.CurveCount = totalCurves
-                m.ArcCount = arcCount
-                m.CircleCount = circleCount
-                m.InnerContourCount = innerCount
-                m.NonAxisEdgeCount = nonAxisEdge
-                m.HorizontalBias = If(totalCurves > 0, hBias / totalCurves, 0)
-                m.VerticalBias = If(totalCurves > 0, vBias / totalCurves, 0)
-                m.LongEdgeBias = If(totalCurves > 0, longEdgeBias / (totalCurves * Math.Max(0.001, m.UnitW)), 0)
-                m.SlopeScore = If(totalCurves > 0, totalSlope / totalCurves, 0)
-                m.PlanComplexityScore = planComplexity
-                m.ProfileComplexityScore = profileComplexity
-            End If
+                        If c.CurveType = Curve2dTypeEnum.kCircularArcCurve2d Then
+                            arcCount += 1
+                            nonAxisEdge += 1
+                            totalSlope += 0.15
+                            profileComplexity += 0.08
+                        ElseIf c.CurveType = Curve2dTypeEnum.kCircleCurve2d Then
+                            circleCount += 1
+                            nonAxisEdge += 1
+                        ElseIf dx >= dy * 2.2 Then
+                            hBias += 1
+                            longEdgeBias += dx
+                            If outer Then planComplexity += 0.04
+                        ElseIf dy >= dx * 2.2 Then
+                            vBias += 1
+                            If outer Then profileComplexity += 0.04
+                        Else
+                            slopeCount += 1
+                            nonAxisEdge += 1
+                            Dim ang As Double = Math.Atan2(dy, dx)
+                            Dim slopeContrib As Double = Math.Abs(Math.Sin(2 * ang))
+                            totalSlope += slopeContrib
+                            profileComplexity += slopeContrib * 0.25
+                        End If
+                    Next
+                    m.CurveCount = totalCurves
+                    m.ArcCount = arcCount
+                    m.CircleCount = circleCount
+                    m.InnerContourCount = innerCount
+                    m.NonAxisEdgeCount = nonAxisEdge
+                    m.HorizontalBias = If(totalCurves > 0, hBias / totalCurves, 0)
+                    m.VerticalBias = If(totalCurves > 0, vBias / totalCurves, 0)
+                    m.LongEdgeBias = If(totalCurves > 0, longEdgeBias / (totalCurves * Math.Max(0.001, m.UnitW)), 0)
+                    m.SlopeScore = If(totalCurves > 0, totalSlope / totalCurves, 0)
+                    m.PlanComplexityScore = planComplexity
+                    m.ProfileComplexityScore = profileComplexity
+                End If
+            Catch exCurve As Exception
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=measure-curves error=" & exCurve.Message)
+            End Try
             Return m
         Catch ex As Exception
-            Debug.Print("WARN probe measure failed for orientation/style " & key & ": " & ex.Message)
-            Debug.Print("WARN MeasureView " & key & ": " & ex.Message)
+            Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=create error=" & ex.Message)
         Finally
             If probeView IsNot Nothing Then
                 Try
@@ -2773,6 +2792,60 @@ Public Class AlbumBuilder
                 End Try
             End If
         End Try
+        Return Nothing
+    End Function
+
+    Private Function GetModelPathForLog(modelDoc As Document) As String
+        If modelDoc Is Nothing Then Return "<null>"
+        Try
+            If Not String.IsNullOrEmpty(modelDoc.FullFileName) Then Return modelDoc.FullFileName
+        Catch
+        End Try
+        Try
+            If Not String.IsNullOrEmpty(modelDoc.DisplayName) Then Return modelDoc.DisplayName
+        Catch
+        End Try
+        Return "<unknown>"
+    End Function
+
+    Private Function GetProbeStyleCandidates(orientation As ViewOrientationTypeEnum,
+                                             preferredStyle As DrawingViewStyleEnum) As List(Of DrawingViewStyleEnum)
+        Dim styles As New List(Of DrawingViewStyleEnum)()
+        If orientation = ViewOrientationTypeEnum.kIsoTopRightViewOrientation Then
+            styles.Add(DrawingViewStyleEnum.kShadedDrawingViewStyle)
+            styles.Add(DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
+            styles.Add(DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+        Else
+            styles.Add(DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
+            styles.Add(DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+        End If
+        If Not styles.Contains(preferredStyle) Then styles.Insert(0, preferredStyle)
+        Return styles
+    End Function
+
+    Private Function TryCreateProbeBaseView(sheet As Sheet,
+                                            modelDoc As Document,
+                                            pt As Point2d,
+                                            scale As Double,
+                                            orientation As ViewOrientationTypeEnum,
+                                            preferredStyle As DrawingViewStyleEnum,
+                                            key As String,
+                                            modelPath As String,
+                                            ByRef usedStyle As DrawingViewStyleEnum) As DrawingView
+        Dim styles As List(Of DrawingViewStyleEnum) = GetProbeStyleCandidates(orientation, preferredStyle)
+        For Each candidateStyle As DrawingViewStyleEnum In styles
+            Try
+                Dim v As DrawingView = sheet.DrawingViews.AddBaseView(TryCast(modelDoc, Inventor.Document),
+                                                                      pt,
+                                                                      scale,
+                                                                      orientation,
+                                                                      candidateStyle)
+                usedStyle = candidateStyle
+                Return v
+            Catch ex As Exception
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientation.ToString() & " style=" & candidateStyle.ToString() & " stage=create error=" & ex.Message)
+            End Try
+        Next
         Return Nothing
     End Function
 
