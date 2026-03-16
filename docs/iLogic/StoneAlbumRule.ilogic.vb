@@ -1260,9 +1260,13 @@ Public Class AlbumBuilder
 
             If added > 0 Then
                 placedIntents.Add(intent.IntentId)
-                realDimCount += added
                 totalAdded += added
-                Debug.Print("Dimension intent " & intent.IntentId.ToString() & " on " & targetRole.ToString() & ": real dimension added (" & added.ToString() & ")")
+                If IsOverallIntent(intent.IntentId) AndAlso modelSize IsNot Nothing AndAlso modelSize.IsValid Then
+                    Debug.Print("Dimension intent " & intent.IntentId.ToString() & " on " & targetRole.ToString() & ": model-driven overall note added (" & added.ToString() & ")")
+                Else
+                    realDimCount += added
+                    Debug.Print("Dimension intent " & intent.IntentId.ToString() & " on " & targetRole.ToString() & ": real dimension added (" & added.ToString() & ")")
+                End If
             ElseIf intent.AllowFallbackNote Then
                 Dim req As New FallbackRequest()
                 req.Intent = intent.IntentId
@@ -1287,7 +1291,7 @@ Public Class AlbumBuilder
             For Each keyView As DrawingView In keyViews
                 If realDimCount >= 5 Then Exit For
                 Dim slot As SlotRect = New SlotRect(keyView.Left, keyView.Left + keyView.Width, keyView.Top - keyView.Height, keyView.Top)
-                Dim supplement As Integer = TryAddTrueDimensions(doc, sheet, keyView, slot, True, True, True, True, 5 - realDimCount)
+                Dim supplement As Integer = TryAddTrueDimensions(doc, sheet, keyView, slot, True, True, True, True, 5 - realDimCount, Nothing, "", False)
                 realDimCount += supplement
             Next
         End If
@@ -1535,7 +1539,7 @@ Public Class AlbumBuilder
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
         Dim dedupeScope As String = BuildGlobalDimensionScope(viewKey, v)
-        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True, Integer.MaxValue, globalDimensionKeys, dedupeScope)
+        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True, Integer.MaxValue, globalDimensionKeys, dedupeScope, False)
         If added = 0 Then
             added += TryAddOuterInnerDimension(doc, sheet, v, slot, addH, globalDimensionKeys, dedupeScope)
             If intent = DimensionIntentId.SlopeHeightHigh OrElse intent = DimensionIntentId.SlopeHeightLow Then
@@ -1573,7 +1577,7 @@ Public Class AlbumBuilder
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
         Dim dedupeScope As String = BuildGlobalDimensionScope(viewKey, v)
-        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True, Integer.MaxValue, globalDimensionKeys, dedupeScope)
+        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True, Integer.MaxValue, globalDimensionKeys, dedupeScope, False)
         If added = 0 Then
             added += TryAddOuterInnerDimension(doc, sheet, v, slot, addH, globalDimensionKeys, dedupeScope)
             If intent = DimensionIntentId.EndCutLength OrElse intent = DimensionIntentId.Chamfer Then
@@ -2199,16 +2203,19 @@ Public Class AlbumBuilder
                                           Optional includeFeatureOffsets As Boolean = True,
                                           Optional maxToAdd As Integer = Integer.MaxValue,
                                           Optional globalDimensionKeys As HashSet(Of String) = Nothing,
-                                          Optional dedupeScope As String = "") As Integer
+                                          Optional dedupeScope As String = "",
+                                          Optional includeOverallExtremes As Boolean = True) As Integer
         Dim count As Integer = 0
         Try
             Dim bucket As CurveBucket = CollectViewCurves(v)
             Dim placedPairs As New HashSet(Of String)(StringComparer.Ordinal)
 
             If addHorizontal Then
-                Dim hExt As CurvePair = FindExtremeCurves(bucket, True)
-                count += AddLinearPairDimension(doc, sheet, v, slot, hExt, DimensionTypeEnum.kHorizontalDimensionType, False, placedPairs, globalDimensionKeys, dedupeScope)
-                If count >= maxToAdd Then Return count
+                If includeOverallExtremes Then
+                    Dim hExt As CurvePair = FindExtremeCurves(bucket, True)
+                    count += AddLinearPairDimension(doc, sheet, v, slot, hExt, DimensionTypeEnum.kHorizontalDimensionType, False, placedPairs, globalDimensionKeys, dedupeScope)
+                    If count >= maxToAdd Then Return count
+                End If
 
                 If preferLocal Then
                     Dim hLocal As CurvePair = FindInnerParallelPairs(bucket, True)
@@ -2226,9 +2233,11 @@ Public Class AlbumBuilder
             End If
 
             If addVertical Then
-                Dim vExt As CurvePair = FindExtremeCurves(bucket, False)
-                count += AddLinearPairDimension(doc, sheet, v, slot, vExt, DimensionTypeEnum.kVerticalDimensionType, False, placedPairs, globalDimensionKeys, dedupeScope)
-                If count >= maxToAdd Then Return count
+                If includeOverallExtremes Then
+                    Dim vExt As CurvePair = FindExtremeCurves(bucket, False)
+                    count += AddLinearPairDimension(doc, sheet, v, slot, vExt, DimensionTypeEnum.kVerticalDimensionType, False, placedPairs, globalDimensionKeys, dedupeScope)
+                    If count >= maxToAdd Then Return count
+                End If
 
                 If preferLocal Then
                     Dim vLocal As CurvePair = FindInnerParallelPairs(bucket, False)
@@ -2643,10 +2652,12 @@ Public Class AlbumBuilder
             Dim slot As SlotRect = New SlotRect(v.Left, v.Left + v.Width, v.Top - v.Height, v.Top)
             Dim m As ViewMeasure = If(roleMap IsNot Nothing, roleMap.GetMeasure(kvp.Key), Nothing)
 
-            ' Try real dimensions first
-            Dim realAdded As Integer = TryAddTrueDimensions(doc, sheet, v, slot, True, True, False, False)
-            added += realAdded
-            If realAdded > 0 Then Continue For
+            ' When real 3D extents are known, do not re-introduce projected overall dimensions here.
+            If modelSize Is Nothing OrElse Not modelSize.IsValid Then
+                Dim realAdded As Integer = TryAddTrueDimensions(doc, sheet, v, slot, True, True, False, False)
+                added += realAdded
+                If realAdded > 0 Then Continue For
+            End If
 
             ' Fallback notes for the two most important intents
             If AddFallbackDimensionNotes(doc, sheet, v, slot, DimensionIntentId.OverallLength, kvp.Key, m, modelSize, noteKeys) Then added += 1
