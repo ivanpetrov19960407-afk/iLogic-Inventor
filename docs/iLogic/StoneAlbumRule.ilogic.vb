@@ -2643,12 +2643,31 @@ Public Class AlbumBuilder
 
             If v Is Nothing Then Return Nothing
 
+            Dim placedName As String = "__PLACED__" & measure.Key & "__" & Guid.NewGuid().ToString("N").Substring(0, 8)
+            Try
+                v.Name = placedName
+            Catch
+            End Try
+            v = TryGetViewByName(sheet, placedName)
+            If v Is Nothing Then Return Nothing
+
+            If Not WaitForViewReady(v, 5000, False) Then
+                Debug.Print("WARN final view model='" & GetModelPathForLog(modelDoc) & "' orientation=" & measure.Orientation.ToString() & " style=" & measure.Style.ToString() & " stage=wait timeout=5000")
+                Return Nothing
+            End If
+
             ' Rotate 90° if FitResult requested it
             If fit.Rotate90 Then
                 Try
                     v.Rotation = Math.PI / 2.0
                 Catch
                 End Try
+
+                v = TryGetViewByName(sheet, placedName)
+                If v Is Nothing Then Return Nothing
+                If Not WaitForViewReady(v, 2000, False) Then
+                    Debug.Print("WARN final view model='" & GetModelPathForLog(modelDoc) & "' orientation=" & measure.Orientation.ToString() & " style=" & measure.Style.ToString() & " stage=wait-after-rotate timeout=2000")
+                End If
             End If
 
             Return v
@@ -2666,6 +2685,7 @@ Public Class AlbumBuilder
                                  key As String,
                                  caption As String) As ViewMeasure
         Dim probeView As DrawingView = Nothing
+        Dim probeName As String = String.Empty
         Dim createdStyle As DrawingViewStyleEnum = style
         Dim modelPath As String = GetModelPathForLog(modelDoc)
         Dim orientationLabel As String = orientation.ToString()
@@ -2686,11 +2706,31 @@ Public Class AlbumBuilder
                 Return Nothing
             End If
 
+            probeName = "__PROBE__" & key & "__" & Guid.NewGuid().ToString("N").Substring(0, 8)
+            Try
+                probeView.Name = probeName
+            Catch exName As Exception
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=create error=name assign failed: " & exName.Message)
+            End Try
+
             Try
                 If doc IsNot Nothing Then doc.Update2(True)
             Catch exUpdate As Exception
                 Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=update error=" & exUpdate.Message)
             End Try
+
+            If Not String.IsNullOrEmpty(probeName) Then
+                probeView = TryGetViewByName(sheet, probeName)
+            End If
+            If probeView Is Nothing Then
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=wait error=probe view reference lost")
+                Return Nothing
+            End If
+
+            If Not WaitForViewReady(probeView, 5000, False) Then
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=wait timeout=5000")
+                Return Nothing
+            End If
 
             Dim m As New ViewMeasure()
             m.Key = key
@@ -2710,6 +2750,10 @@ Public Class AlbumBuilder
                 Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=measure-size error=" & exSize.Message)
                 Return Nothing
             End Try
+            If m.UnitW <= 0.0001 OrElse m.UnitH <= 0.0001 Then
+                Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=measure-size error=non-positive size w=" & m.UnitW.ToString("0.####") & " h=" & m.UnitH.ToString("0.####"))
+                Return Nothing
+            End If
 
             ' Curve analysis should not abort successful size probe.
             Try
@@ -2777,14 +2821,21 @@ Public Class AlbumBuilder
                     m.SlopeScore = If(totalCurves > 0, totalSlope / totalCurves, 0)
                     m.PlanComplexityScore = planComplexity
                     m.ProfileComplexityScore = profileComplexity
+                    Debug.Print("INFO probe success key=" & key & " uw=" & m.UnitW.ToString("0.####") & " uh=" & m.UnitH.ToString("0.####") & " curves=" & m.CurveCount.ToString())
+                Else
+                    Debug.Print("INFO probe success key=" & key & " uw=" & m.UnitW.ToString("0.####") & " uh=" & m.UnitH.ToString("0.####") & " curves=<none>")
                 End If
             Catch exCurve As Exception
                 Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=measure-curves error=" & exCurve.Message)
+                Debug.Print("INFO probe success key=" & key & " uw=" & m.UnitW.ToString("0.####") & " uh=" & m.UnitH.ToString("0.####") & " curves=<failed>")
             End Try
             Return m
         Catch ex As Exception
             Debug.Print("WARN probe model='" & modelPath & "' orientation=" & orientationLabel & " style=" & createdStyle.ToString() & " stage=create error=" & ex.Message)
         Finally
+            If Not String.IsNullOrEmpty(probeName) Then
+                probeView = TryGetViewByName(sheet, probeName)
+            End If
             If probeView IsNot Nothing Then
                 Try
                     probeView.Delete()
@@ -2806,6 +2857,58 @@ Public Class AlbumBuilder
         Catch
         End Try
         Return "<unknown>"
+    End Function
+
+    Private Function TryGetViewByName(sheet As Sheet, name As String) As DrawingView
+        If sheet Is Nothing OrElse String.IsNullOrEmpty(name) Then Return Nothing
+        Try
+            For i As Integer = 1 To sheet.DrawingViews.Count
+                Dim v As DrawingView = sheet.DrawingViews.Item(i)
+                If v Is Nothing Then Continue For
+                If String.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase) Then Return v
+            Next
+        Catch
+        End Try
+        Return Nothing
+    End Function
+
+    Private Function WaitForViewReady(v As DrawingView,
+                                      timeoutMs As Integer,
+                                      Optional requirePrecise As Boolean = False) As Boolean
+        If v Is Nothing Then Return False
+        Dim startTick As Integer = Environment.TickCount
+        Do
+            Try
+                If v IsNot Nothing AndAlso v.IsUpdateComplete Then
+                    Dim w As Double = v.Width
+                    Dim h As Double = v.Height
+                    If w > 0.0001 AndAlso h > 0.0001 Then
+                        If requirePrecise Then
+                            Try
+                                If Not v.IsRasterView Then Return True
+                            Catch
+                                Return True
+                            End Try
+                        Else
+                            Return True
+                        End If
+                    End If
+                End If
+            Catch
+                ' COM can be transient while view rebuilds.
+            End Try
+
+            System.Windows.Forms.Application.DoEvents()
+            System.Threading.Thread.Sleep(50)
+        Loop While (Environment.TickCount - startTick) < timeoutMs
+
+        If requirePrecise Then
+            Try
+                If v IsNot Nothing AndAlso v.IsUpdateComplete AndAlso v.Width > 0.0001 AndAlso v.Height > 0.0001 Then Return True
+            Catch
+            End Try
+        End If
+        Return False
     End Function
 
     Private Function GetProbeStyleCandidates(orientation As ViewOrientationTypeEnum,
