@@ -1291,7 +1291,7 @@ Public Class AlbumBuilder
             For Each keyView As DrawingView In keyViews
                 If realDimCount >= 5 Then Exit For
                 Dim slot As SlotRect = New SlotRect(keyView.Left, keyView.Left + keyView.Width, keyView.Top - keyView.Height, keyView.Top)
-                Dim supplement As Integer = TryAddTrueDimensions(doc, sheet, keyView, slot, True, True, True, True, 5 - realDimCount, Nothing, "", False)
+                Dim supplement As Integer = TryAddTrueDimensions(doc, sheet, keyView, slot, True, True, True, True, 5 - realDimCount, Nothing, "", False, False)
                 realDimCount += supplement
             Next
         End If
@@ -1539,7 +1539,7 @@ Public Class AlbumBuilder
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
         Dim dedupeScope As String = BuildGlobalDimensionScope(viewKey, v)
-        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True, Integer.MaxValue, globalDimensionKeys, dedupeScope, False)
+        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True, Integer.MaxValue, globalDimensionKeys, dedupeScope, False, False)
         If added = 0 Then
             added += TryAddOuterInnerDimension(doc, sheet, v, slot, addH, globalDimensionKeys, dedupeScope)
             If intent = DimensionIntentId.SlopeHeightHigh OrElse intent = DimensionIntentId.SlopeHeightLow Then
@@ -1577,7 +1577,7 @@ Public Class AlbumBuilder
         Dim dedupeKey As String = viewKey & "|" & intent.ToString()
         If usedKeys.Contains(dedupeKey) Then Return 0
         Dim dedupeScope As String = BuildGlobalDimensionScope(viewKey, v)
-        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True, Integer.MaxValue, globalDimensionKeys, dedupeScope, False)
+        Dim added As Integer = TryAddTrueDimensions(doc, sheet, v, slot, addH, addV, True, True, Integer.MaxValue, globalDimensionKeys, dedupeScope, False, False)
         If added = 0 Then
             added += TryAddOuterInnerDimension(doc, sheet, v, slot, addH, globalDimensionKeys, dedupeScope)
             If intent = DimensionIntentId.EndCutLength OrElse intent = DimensionIntentId.Chamfer Then
@@ -2204,7 +2204,8 @@ Public Class AlbumBuilder
                                           Optional maxToAdd As Integer = Integer.MaxValue,
                                           Optional globalDimensionKeys As HashSet(Of String) = Nothing,
                                           Optional dedupeScope As String = "",
-                                          Optional includeOverallExtremes As Boolean = True) As Integer
+                                          Optional includeOverallExtremes As Boolean = True,
+                                          Optional allowOuterFeatureOffsets As Boolean = True) As Integer
         Dim count As Integer = 0
         Try
             Dim bucket As CurveBucket = CollectViewCurves(v)
@@ -2224,7 +2225,7 @@ Public Class AlbumBuilder
                 End If
 
                 If includeFeatureOffsets Then
-                    Dim pairs As List(Of CurvePair) = FindFeatureOffsets(bucket, True)
+                    Dim pairs As List(Of CurvePair) = FindFeatureOffsets(bucket, True, allowOuterFeatureOffsets)
                     For Each pair As CurvePair In pairs
                         count += AddLinearPairDimension(doc, sheet, v, slot, pair, DimensionTypeEnum.kHorizontalDimensionType, True, placedPairs, globalDimensionKeys, dedupeScope)
                         If count >= maxToAdd Then Return count
@@ -2246,7 +2247,7 @@ Public Class AlbumBuilder
                 End If
 
                 If includeFeatureOffsets Then
-                    Dim pairs As List(Of CurvePair) = FindFeatureOffsets(bucket, False)
+                    Dim pairs As List(Of CurvePair) = FindFeatureOffsets(bucket, False, allowOuterFeatureOffsets)
                     For Each pair As CurvePair In pairs
                         count += AddLinearPairDimension(doc, sheet, v, slot, pair, DimensionTypeEnum.kVerticalDimensionType, True, placedPairs, globalDimensionKeys, dedupeScope)
                         If count >= maxToAdd Then Return count
@@ -2450,15 +2451,15 @@ Public Class AlbumBuilder
         Return 0
     End Function
 
-    Private Function FindFeatureOffsets(bucket As CurveBucket, horizontalDim As Boolean) As List(Of CurvePair)
+    Private Function FindFeatureOffsets(bucket As CurveBucket, horizontalDim As Boolean, Optional allowOuterCurves As Boolean = True) As List(Of CurvePair)
         Dim result As New List(Of CurvePair)()
         Dim pool As New List(Of DrawingCurve)()
         If horizontalDim Then
             pool.AddRange(bucket.InnerVertical)
-            pool.AddRange(bucket.OuterVertical)
+            If allowOuterCurves Then pool.AddRange(bucket.OuterVertical)
         Else
             pool.AddRange(bucket.InnerHorizontal)
-            pool.AddRange(bucket.OuterHorizontal)
+            If allowOuterCurves Then pool.AddRange(bucket.OuterHorizontal)
         End If
         If pool.Count < 3 Then Return result
 
