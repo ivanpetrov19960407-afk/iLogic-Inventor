@@ -1,6 +1,8 @@
 Attribute VB_Name = "RKM_TitleBlockPrompted"
 Option Explicit
 
+' NOTE: Historical legacy VBA reference excerpt; this file is not a guaranteed full importable module.
+
 ' Имя определения штампа в ресурсах
 Public Const RKM_TITLEBLOCK_NAME As String = "RKM_SPDS_A3_FORM3"
 

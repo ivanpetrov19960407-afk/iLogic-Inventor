@@ -1,3 +1,3 @@
 namespace StoneDrawingAuto.Core.Abstractions;
 
-public interface IOrderProcessor;
+public interface IOrderProcessor { }

@@ -1,6 +1,8 @@
 Attribute VB_Name = "RKM_Excel"
 Option Explicit
 
+' NOTE: Historical legacy VBA reference excerpt; this file is not a guaranteed full importable module.
+
 Private Const DEFAULT_SHEET_NAME As String = "ALBUM"
 Private Const HEADER_ROW_INDEX As Long = 1
 Private Const HEADER_SCAN_ROWS As Long = 10
@@ -59,7 +61,7 @@ EH:
     Resume CleanExit
 End Function
 
-' Умный поиск заголовков (алиасы) [cite: 75, 77, 78]
+' Умный поиск заголовков (алиасы) 
 Private Function ResolveHeaderAlias(ByVal rawHeader As String) As String
     Dim n As String
     n = UCase$(Trim$(rawHeader))
@@ -100,4 +102,4 @@ Private Function ResolveModelPath(ByVal inputPath As String, ByVal workspacePath
     End If
 End Function
 
-' Остальные вспомогательные функции (ReadHeaderMap, CreatePromptMapFromRow и др.) [cite: 15, 77]
+' Остальные вспомогательные функции (ReadHeaderMap, CreatePromptMapFromRow и др.) 

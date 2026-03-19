@@ -53,6 +53,7 @@ Imports Inventor
 Imports System
 Imports System.Collections.Generic
 Imports System.Runtime.CompilerServices
+Imports System.Runtime.InteropServices
 
 Sub Main()
     Dim excelPath     As String = String.Empty
@@ -308,7 +309,8 @@ Public Class AlbumBuilder
         Dim openedHere As Boolean = False
 
         Try
-            Dim sheetName As String = SHEET_PFX & System.IO.Path.GetFileNameWithoutExtension(item.ModelPath)
+            Dim baseSheetName As String = SHEET_PFX & System.IO.Path.GetFileNameWithoutExtension(item.ModelPath)
+            Dim sheetName As String = MakeUniqueSheetName(doc, baseSheetName)
             sheet = doc.Sheets.Add(
                 DrawingSheetSizeEnum.kA3DrawingSheetSize,
                 PageOrientationTypeEnum.kLandscapePageOrientation)
@@ -3089,7 +3091,7 @@ Public Class AlbumBuilder
         Dim tbH As Double = Cm(doc, TB_H_MM)
 
         Dim safeL As Double = fl + fo
-        Dim safeR As Double = ww - fo - tbW
+        Dim safeR As Double = ww - fo
         Dim safeB As Double = tbH + fo
         Dim safeT As Double = hh - fo
 
@@ -3172,7 +3174,28 @@ Public Class AlbumBuilder
                 Debug.Print("EnsureBorder: already exists: " & BORDER_NAME)
                 Return
             End If
-            Debug.Print("WARN EnsureBorder: definition '" & BORDER_NAME & "' not found in document.")
+
+            Dim created As BorderDefinition = Nothing
+            Try
+                _app.SilentOperation = True
+                created = doc.BorderDefinitions.Add(BORDER_NAME)
+            Finally
+                _app.SilentOperation = False
+            End Try
+            If created Is Nothing Then
+                Debug.Print("WARN EnsureBorder: definition '" & BORDER_NAME & "' could not be created.")
+                Return
+            End If
+
+            Dim sk As DrawingSketch = Nothing
+            created.Edit(sk)
+            Try
+                ClearSketch(sk)
+                DrawBorderDefinition(doc, sk)
+            Finally
+                created.ExitEdit(True)
+            End Try
+            Debug.Print("EnsureBorder: created: " & BORDER_NAME)
         Catch ex As Exception
             Debug.Print("WARN EnsureBorder: " & ex.Message)
         End Try
@@ -3191,11 +3214,139 @@ Public Class AlbumBuilder
                 Debug.Print("EnsureTitleBlock: already exists: " & TB_NAME)
                 Return
             End If
-            Debug.Print("WARN EnsureTitleBlock: definition '" & TB_NAME & "' not found in document.")
+
+            Dim created As TitleBlockDefinition = Nothing
+            Try
+                _app.SilentOperation = True
+                created = doc.TitleBlockDefinitions.Add(TB_NAME)
+            Finally
+                _app.SilentOperation = False
+            End Try
+            If created Is Nothing Then
+                Debug.Print("WARN EnsureTitleBlock: definition '" & TB_NAME & "' could not be created.")
+                Return
+            End If
+
+            Dim sk As DrawingSketch = Nothing
+            created.Edit(sk)
+            Try
+                ClearSketch(sk)
+                DrawTitleBlockDefinition(doc, sk)
+            Finally
+                created.ExitEdit(True)
+            End Try
+            Debug.Print("EnsureTitleBlock: created: " & TB_NAME)
         Catch ex As Exception
             Debug.Print("WARN EnsureTitleBlock: " & ex.Message)
         End Try
     End Sub
+
+    Private Sub ClearSketch(sk As DrawingSketch)
+        If sk Is Nothing Then Return
+        For i As Integer = sk.TextBoxes.Count To 1 Step -1
+            Try
+                sk.TextBoxes.Item(i).Delete()
+            Catch
+            End Try
+        Next
+        For i As Integer = sk.SketchLines.Count To 1 Step -1
+            Try
+                sk.SketchLines.Item(i).Delete()
+            Catch
+            End Try
+        Next
+    End Sub
+
+    Private Sub DrawBorderDefinition(doc As DrawingDocument, sk As DrawingSketch)
+        sk.SketchLines.AddByTwoPoints(P(0, 0), P(0.0001, 0.0001))
+        sk.SketchLines.AddByTwoPoints(P(Cm(doc, A3_W_MM), Cm(doc, A3_H_MM)), P(Cm(doc, A3_W_MM) - 0.0001, Cm(doc, A3_H_MM) - 0.0001))
+        sk.SketchLines.AddAsTwoPointRectangle(P(Cm(doc, FRAME_L_MM), Cm(doc, FRAME_O_MM)), P(Cm(doc, A3_W_MM - FRAME_O_MM), Cm(doc, A3_H_MM - FRAME_O_MM)))
+    End Sub
+
+    Private Sub DrawTitleBlockDefinition(doc As DrawingDocument, sk As DrawingSketch)
+        Dim x2 As Double = -Cm(doc, FRAME_O_MM)
+        Dim y1 As Double = Cm(doc, FRAME_O_MM)
+        Dim x1 As Double = x2 - Cm(doc, TB_W_MM)
+        Dim y2 As Double = y1 + Cm(doc, TB_H_MM)
+
+        sk.SketchLines.AddByTwoPoints(P(0, 0), P(-0.0001, 0.0001))
+        sk.SketchLines.AddAsTwoPointRectangle(P(x1, y1), P(x2, y2))
+
+        VL(doc, sk, x1, y1, 7, 0, 55) : VL(doc, sk, x1, y1, 17, 0, 55)
+        VL(doc, sk, x1, y1, 27, 0, 55) : VL(doc, sk, x1, y1, 42, 0, 55)
+        VL(doc, sk, x1, y1, 57, 0, 55) : VL(doc, sk, x1, y1, 67, 0, 55)
+        VL(doc, sk, x1, y1, 137, 0, 40) : VL(doc, sk, x1, y1, 152, 15, 40)
+        VL(doc, sk, x1, y1, 167, 15, 40)
+
+        Dim y As Double
+        For y = 5.0 To 30.0 Step 5.0
+            HL(doc, sk, x1, y1, 0, 67, y)
+        Next
+        HL(doc, sk, x1, y1, 0, 185, 15) : HL(doc, sk, x1, y1, 0, 67, 35)
+        HL(doc, sk, x1, y1, 137, 185, 35) : HL(doc, sk, x1, y1, 0, 185, 40)
+        HL(doc, sk, x1, y1, 0, 67, 45) : HL(doc, sk, x1, y1, 0, 67, 50)
+
+        Lbl(doc, sk, x1, y1, 0, 35, 7, 40, "Изм.")
+        Lbl(doc, sk, x1, y1, 7, 35, 17, 40, "Кол.уч")
+        Lbl(doc, sk, x1, y1, 17, 35, 27, 40, "Лист")
+        Lbl(doc, sk, x1, y1, 27, 35, 42, 40, "№ doc.")
+        Lbl(doc, sk, x1, y1, 42, 35, 57, 40, "Подп.")
+        Lbl(doc, sk, x1, y1, 57, 35, 67, 40, "Дата")
+        Lbl(doc, sk, x1, y1, 137, 35, 152, 40, "Стадия")
+        Lbl(doc, sk, x1, y1, 152, 35, 167, 40, "Лист")
+        Lbl(doc, sk, x1, y1, 167, 35, 185, 40, "Листов")
+
+        Prm(doc, sk, x1, y1, 67, 40, 185, 55, "CODE")
+        Prm(doc, sk, x1, y1, 67, 15, 137, 40, "PROJECT_NAME")
+        Prm(doc, sk, x1, y1, 67, 0, 137, 15, "DRAWING_NAME")
+        Prm(doc, sk, x1, y1, 137, 0, 185, 15, "ORG_NAME")
+        Prm(doc, sk, x1, y1, 137, 15, 152, 35, "STAGE")
+        Prm(doc, sk, x1, y1, 152, 15, 167, 35, "SHEET")
+        Prm(doc, sk, x1, y1, 167, 15, 185, 35, "SHEETS")
+    End Sub
+
+    Private Function P(x As Double, y As Double) As Point2d
+        Return _app.TransientGeometry.CreatePoint2d(x, y)
+    End Function
+
+    Private Sub VL(doc As DrawingDocument, sk As DrawingSketch, x1 As Double, y1 As Double, dxMm As Double, y0Mm As Double, y1Mm As Double)
+        sk.SketchLines.AddByTwoPoints(P(x1 + Cm(doc, dxMm), y1 + Cm(doc, y0Mm)), P(x1 + Cm(doc, dxMm), y1 + Cm(doc, y1Mm)))
+    End Sub
+
+    Private Sub HL(doc As DrawingDocument, sk As DrawingSketch, x1 As Double, y1 As Double, x0Mm As Double, x1Mm As Double, dyMm As Double)
+        sk.SketchLines.AddByTwoPoints(P(x1 + Cm(doc, x0Mm), y1 + Cm(doc, dyMm)), P(x1 + Cm(doc, x1Mm), y1 + Cm(doc, dyMm)))
+    End Sub
+
+    Private Sub Lbl(doc As DrawingDocument, sk As DrawingSketch, x1 As Double, y1 As Double, x0Mm As Double, y0Mm As Double, x1Mm As Double, y1Mm As Double, caption As String)
+        Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x1 + Cm(doc, x0Mm), y1 + Cm(doc, y0Mm)), P(x1 + Cm(doc, x1Mm), y1 + Cm(doc, y1Mm)), caption)
+        tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
+        tb.VerticalJustification = VerticalTextAlignmentEnum.kAlignTextMiddle
+    End Sub
+
+    Private Sub Prm(doc As DrawingDocument, sk As DrawingSketch, x1 As Double, y1 As Double, x0Mm As Double, y0Mm As Double, x1Mm As Double, y1Mm As Double, promptName As String)
+        Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x1 + Cm(doc, x0Mm), y1 + Cm(doc, y0Mm)), P(x1 + Cm(doc, x1Mm), y1 + Cm(doc, y1Mm)), "<Prompt>" & promptName & "</Prompt>")
+        tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
+        tb.VerticalJustification = VerticalTextAlignmentEnum.kAlignTextMiddle
+    End Sub
+
+    Private Function MakeUniqueSheetName(doc As DrawingDocument, baseName As String) As String
+        Dim candidate As String = baseName
+        Dim suffix As Integer = 2
+        While SheetNameExists(doc, candidate)
+            candidate = baseName & "_" & suffix.ToString()
+            suffix += 1
+        End While
+        Return candidate
+    End Function
+
+    Private Function SheetNameExists(doc As DrawingDocument, sheetName As String) As Boolean
+        For Each existing As Sheet In doc.Sheets
+            If String.Equals(existing.Name, sheetName, StringComparison.OrdinalIgnoreCase) Then
+                Return True
+            End If
+        Next
+        Return False
+    End Function
 
     Private Function ResolveTemplateSheet(doc As DrawingDocument) As Sheet
         Try
@@ -3477,8 +3628,11 @@ Public Class XlsxReader
                                 workspacePath As String,
                                 sheetTab As String) As List(Of AlbumItem)
         Dim result As New List(Of AlbumItem)()
+        Dim xl As Object = Nothing
+        Dim wb As Object = Nothing
+        Dim ws As Object = Nothing
+        Dim used As Object = Nothing
         Try
-            Dim xl As Object = Nothing
             Try
                 xl = CreateObject("Excel.Application")
             Catch
@@ -3490,21 +3644,15 @@ Public Class XlsxReader
 
             xl.Visible = False
             xl.DisplayAlerts = False
-            Dim wb As Object = Nothing
             Try
                 wb = xl.Workbooks.Open(excelPath)
             Catch ex As Exception
                 System.Windows.Forms.MessageBox.Show(
                     "Не удалось открыть Excel:" & vbCrLf & ex.Message,
                     "Ошибка XlsxReader")
-                Try
-                    xl.Quit()
-                Catch
-                End Try
                 Return result
             End Try
 
-            Dim ws As Object = Nothing
             For Each s As Object In wb.Sheets
                 If String.Equals(CStr(s.Name), sheetTab, StringComparison.OrdinalIgnoreCase) Then
                     ws = s
@@ -3515,25 +3663,20 @@ Public Class XlsxReader
                 System.Windows.Forms.MessageBox.Show(
                     "Лист '" & sheetTab & "' не найден в файле:",
                     "Ошибка XlsxReader")
-                Try
-                    wb.Close(False)
-                Catch
-                End Try
-                Try
-                    xl.Quit()
-                Catch
-                End Try
                 Return result
             End If
 
-            Dim lastRow As Integer = CInt(ws.UsedRange.Rows.Count)
-            Dim lastCol As Integer = CInt(ws.UsedRange.Columns.Count)
+            used = ws.UsedRange
+            Dim firstRow As Integer = CInt(used.Row)
+            Dim firstCol As Integer = CInt(used.Column)
+            Dim lastRow As Integer = firstRow + CInt(used.Rows.Count) - 1
+            Dim lastCol As Integer = firstCol + CInt(used.Columns.Count) - 1
             Dim headerRow As Integer = 0
             Dim canonicalByColumn As New Dictionary(Of Integer, String)()
-            For r As Integer = 1 To Math.Min(10, lastRow)
+            For r As Integer = firstRow To Math.Min(firstRow + 9, lastRow)
                 Dim rowMap As New Dictionary(Of Integer, String)()
                 Dim hasModelPath As Boolean = False
-                For c As Integer = 1 To lastCol
+                For c As Integer = firstCol To lastCol
                     Dim raw As String = SafeCellText(ws.Cells(r, c).Value)
                     Dim canonical As String = ResolveHeaderAlias(raw)
                     If Not String.IsNullOrWhiteSpace(canonical) Then
@@ -3556,14 +3699,6 @@ Public Class XlsxReader
                                        "Лист: " & sheetTab
                 Debug.Print("XlsxReader.Load: " & hdrErr)
                 System.Windows.Forms.MessageBox.Show(hdrErr, "Ошибка XlsxReader")
-                Try
-                    wb.Close(False)
-                Catch
-                End Try
-                Try
-                    xl.Quit()
-                Catch
-                End Try
                 Return result
             End If
 
@@ -3578,14 +3713,6 @@ Public Class XlsxReader
                 Dim idxErr As String = "В строке заголовков не определена колонка MODEL_PATH."
                 Debug.Print("XlsxReader.Load: " & idxErr)
                 System.Windows.Forms.MessageBox.Show(idxErr, "Ошибка XlsxReader")
-                Try
-                    wb.Close(False)
-                Catch
-                End Try
-                Try
-                    xl.Quit()
-                Catch
-                End Try
                 Return result
             End If
 
@@ -3601,7 +3728,7 @@ Public Class XlsxReader
                 item.SourceModelRaw = modelRaw
                 item.ModelPath = modelPath
 
-                For c As Integer = 1 To lastCol
+                For c As Integer = firstCol To lastCol
                     Dim canonical As String = String.Empty
                     If canonicalByColumn.ContainsKey(c) Then
                         canonical = canonicalByColumn(c)
@@ -3621,19 +3748,43 @@ Public Class XlsxReader
                 result.Add(item)
             Next
 
-            Try
-                wb.Close(False)
-            Catch
-            End Try
-            Try
-                xl.Quit()
-            Catch
-            End Try
         Catch ex As Exception
             Debug.Print("XlsxReader.Load error: " & ex.Message)
+        Finally
+            If wb IsNot Nothing Then
+                Try
+                    wb.Close(False)
+                Catch
+                End Try
+            End If
+            If xl IsNot Nothing Then
+                Try
+                    xl.Quit()
+                Catch
+                End Try
+            End If
+            ReleaseComObjectSafe(used)
+            ReleaseComObjectSafe(ws)
+            ReleaseComObjectSafe(wb)
+            ReleaseComObjectSafe(xl)
+            GC.Collect()
+            GC.WaitForPendingFinalizers()
+            GC.Collect()
         End Try
         Return result
     End Function
+
+    Private Shared Sub ReleaseComObjectSafe(comObj As Object)
+        If comObj Is Nothing Then Return
+        Try
+            Marshal.FinalReleaseComObject(comObj)
+        Catch
+            Try
+                Marshal.ReleaseComObject(comObj)
+            Catch
+            End Try
+        End Try
+    End Sub
 
     Private Shared Function SafeCellText(v As Object) As String
         If v Is Nothing Then Return String.Empty

@@ -1,6 +1,8 @@
 Attribute VB_Name = "RKM_Utils"
 Option Explicit
 
+' NOTE: Historical legacy VBA reference excerpt; this file is not a guaranteed full importable module.
+
 Public Const RKM_BORDER_NAME As String = "RKM_SPDS_A3_BORDER"
 Public Const MM_TO_CM As Double = 0.1
 Public Const A3_WIDTH_MM As Double = 420#
