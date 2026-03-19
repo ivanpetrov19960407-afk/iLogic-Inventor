@@ -1,3 +1,3 @@
 namespace StoneDrawingAuto.Core.Abstractions;
 
-public interface ISheetStylingService;
+public interface ISheetStylingService { }

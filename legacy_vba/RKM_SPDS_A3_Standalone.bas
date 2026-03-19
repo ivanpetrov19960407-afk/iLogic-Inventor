@@ -1,6 +1,8 @@
 Attribute VB_Name = "RKM_SPDS_A3_Standalone"
 Option Explicit
 
+' NOTE: Historical legacy VBA reference excerpt; this file is not a guaranteed full importable module.
+
 ' Геометрические константы рамки (в мм)
 Private Const A3_W_MM As Double = 420#
 Private Const A3_H_MM As Double = 297#
