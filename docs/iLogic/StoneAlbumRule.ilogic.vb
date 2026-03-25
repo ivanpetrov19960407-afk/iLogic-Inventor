@@ -3330,7 +3330,8 @@ Public Class AlbumBuilder
     End Sub
 
     Private Sub DrawTitleBlockDefinition(doc As DrawingDocument, sk As DrawingSketch)
-        Dim x2 As Double = -Cm(doc, FRAME_O_MM)
+        ' Фикс смещения влево: штамп привязываем к правой кромке листа.
+        Dim x2 As Double = 0.0
         Dim y1 As Double = Cm(doc, FRAME_O_MM)
         Dim x1 As Double = x2 - Cm(doc, TB_W_MM)
         Dim y2 As Double = y1 + Cm(doc, TB_H_MM)
