@@ -170,6 +170,7 @@ Public Class AlbumBuilder
     Private Const ADD_VIEW_NOTES As Boolean = True
     Private Const ADD_VIEW_DIMENSIONS As Boolean = True
     Private Const DIMENSIONS_ON_MAIN_ISO As Boolean = False
+    Private Const FORCE_ISOMETRIC_VIEWS As Boolean = True
     Private Const VIEW_CAPTION_GAP_MM As Double = 5.0
     Private Const VIEW_DIM_MIN_MM As Double = 10.0
 
@@ -527,6 +528,23 @@ Public Class AlbumBuilder
             Return False
         End If
 
+        If FORCE_ISOMETRIC_VIEWS Then
+            best.MainMeasure = ForceIsometricMeasure(best.MainMeasure, mIso)
+            best.Aux1Measure = ForceIsometricMeasure(best.Aux1Measure, mIso)
+            best.Aux2Measure = ForceIsometricMeasure(best.Aux2Measure, mIso)
+
+            best.MainFit = ScaleToFit(best.MainSlot, best.MainMeasure, ISO_SCALE_MARGIN)
+            best.Aux1Fit = ScaleToFit(best.Aux1Slot, best.Aux1Measure, ISO_SCALE_MARGIN)
+            If best.Aux2Measure IsNot Nothing Then
+                best.Aux2Fit = ScaleToFit(best.Aux2Slot, best.Aux2Measure, ISO_SCALE_MARGIN)
+            End If
+            If best.MainFit Is Nothing OrElse best.Aux1Fit Is Nothing Then
+                failReason = SheetBuildFailReason.LayoutSelectionFailed
+                Debug.Print("WARN: изометрический layout не рассчитан")
+                Return False
+            End If
+        End If
+
         Debug.Print("Layout template=" & best.TemplateName & ", score=" & String.Format("{0:F3}", best.Score))
 
         Dim placedViews As Dictionary(Of ViewRole, DrawingView) = PlaceViewsByTemplate(sheet, modelDoc, best, roleMap)
@@ -536,13 +554,15 @@ Public Class AlbumBuilder
             Return False
         End If
 
-        Dim finalOrthogonal As Integer = 0
-        If placedViews.ContainsKey(best.MainRole) Then finalOrthogonal += 1
-        If placedViews.ContainsKey(best.AuxRole) Then finalOrthogonal += 1
-        If finalOrthogonal < 2 Then
-            failReason = SheetBuildFailReason.LessThan2FinalViews
-            Debug.Print("WARN: после размещения менее 2 ортогональных видов")
-            Return False
+        If Not FORCE_ISOMETRIC_VIEWS Then
+            Dim finalOrthogonal As Integer = 0
+            If placedViews.ContainsKey(best.MainRole) Then finalOrthogonal += 1
+            If placedViews.ContainsKey(best.AuxRole) Then finalOrthogonal += 1
+            If finalOrthogonal < 2 Then
+                failReason = SheetBuildFailReason.LessThan2FinalViews
+                Debug.Print("WARN: после размещения менее 2 ортогональных видов")
+                Return False
+            End If
         End If
 
         If ADD_VIEW_NOTES Then
@@ -800,6 +820,51 @@ Public Class AlbumBuilder
     Private Function ChooseFallbackMeasure(primary As ViewMeasure, secondary As ViewMeasure) As ViewMeasure
         If primary IsNot Nothing Then Return primary
         Return secondary
+    End Function
+
+    Private Function ForceIsometricMeasure(source As ViewMeasure, isoMeasure As ViewMeasure) As ViewMeasure
+        If source Is Nothing Then Return Nothing
+        Dim result As New ViewMeasure()
+        result.Key = source.Key
+        result.Caption = "Изометрия"
+        result.Orientation = ViewOrientationTypeEnum.kIsoTopRightViewOrientation
+        result.Style = DrawingViewStyleEnum.kShadedDrawingViewStyle
+
+        If isoMeasure IsNot Nothing Then
+            result.UnitW = isoMeasure.UnitW
+            result.UnitH = isoMeasure.UnitH
+            result.BoundingArea = isoMeasure.BoundingArea
+            result.AspectRatio = isoMeasure.AspectRatio
+            result.HorizontalBias = isoMeasure.HorizontalBias
+            result.VerticalBias = isoMeasure.VerticalBias
+            result.LongEdgeBias = isoMeasure.LongEdgeBias
+            result.SlopeScore = isoMeasure.SlopeScore
+            result.ProfileComplexityScore = isoMeasure.ProfileComplexityScore
+            result.PlanComplexityScore = isoMeasure.PlanComplexityScore
+            result.CurveCount = isoMeasure.CurveCount
+            result.ArcCount = isoMeasure.ArcCount
+            result.CircleCount = isoMeasure.CircleCount
+            result.InnerContourCount = isoMeasure.InnerContourCount
+            result.NonAxisEdgeCount = isoMeasure.NonAxisEdgeCount
+        Else
+            result.UnitW = source.UnitW
+            result.UnitH = source.UnitH
+            result.BoundingArea = source.BoundingArea
+            result.AspectRatio = source.AspectRatio
+            result.HorizontalBias = source.HorizontalBias
+            result.VerticalBias = source.VerticalBias
+            result.LongEdgeBias = source.LongEdgeBias
+            result.SlopeScore = source.SlopeScore
+            result.ProfileComplexityScore = source.ProfileComplexityScore
+            result.PlanComplexityScore = source.PlanComplexityScore
+            result.CurveCount = source.CurveCount
+            result.ArcCount = source.ArcCount
+            result.CircleCount = source.CircleCount
+            result.InnerContourCount = source.InnerContourCount
+            result.NonAxisEdgeCount = source.NonAxisEdgeCount
+        End If
+
+        Return result
     End Function
 
     Private Function GetMeasureKeyByRole(map As RoleMap, descriptor As PartDescriptor) As String
@@ -3170,32 +3235,33 @@ Public Class AlbumBuilder
                     Exit For
                 End If
             Next
-            If existing IsNot Nothing Then
-                Debug.Print("EnsureBorder: already exists: " & BORDER_NAME)
-                Return
+            Dim target As BorderDefinition = existing
+            If target Is Nothing Then
+                Try
+                    _app.SilentOperation = True
+                    target = doc.BorderDefinitions.Add(BORDER_NAME)
+                Finally
+                    _app.SilentOperation = False
+                End Try
             End If
-
-            Dim created As BorderDefinition = Nothing
-            Try
-                _app.SilentOperation = True
-                created = doc.BorderDefinitions.Add(BORDER_NAME)
-            Finally
-                _app.SilentOperation = False
-            End Try
-            If created Is Nothing Then
+            If target Is Nothing Then
                 Debug.Print("WARN EnsureBorder: definition '" & BORDER_NAME & "' could not be created.")
                 Return
             End If
 
             Dim sk As DrawingSketch = Nothing
-            created.Edit(sk)
+            target.Edit(sk)
             Try
                 ClearSketch(sk)
                 DrawBorderDefinition(doc, sk)
             Finally
-                created.ExitEdit(True)
+                target.ExitEdit(True)
             End Try
-            Debug.Print("EnsureBorder: created: " & BORDER_NAME)
+            If existing Is Nothing Then
+                Debug.Print("EnsureBorder: created: " & BORDER_NAME)
+            Else
+                Debug.Print("EnsureBorder: refreshed: " & BORDER_NAME)
+            End If
         Catch ex As Exception
             Debug.Print("WARN EnsureBorder: " & ex.Message)
         End Try
