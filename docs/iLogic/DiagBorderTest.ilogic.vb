@@ -119,10 +119,10 @@ Sub Main()
                     ThisApplication.TransientGeometry.CreatePoint2d(-0.0001,0.0001))
                 sk2.SketchLines.AddAsTwoPointRectangle(
                     ThisApplication.TransientGeometry.CreatePoint2d(-19.0, 0.5),
-                    ThisApplication.TransientGeometry.CreatePoint2d(-0.5, 6.0))
+                    ThisApplication.TransientGeometry.CreatePoint2d(0.0, 6.0))
                 Dim tb As Inventor.TextBox = sk2.TextBoxes.AddByRectangle(
                     ThisApplication.TransientGeometry.CreatePoint2d(-19.0, 4.5),
-                    ThisApplication.TransientGeometry.CreatePoint2d(-0.5, 6.0),
+                    ThisApplication.TransientGeometry.CreatePoint2d(0.0, 6.0),
                     "<Prompt>CODE</Prompt>")
                 log.AppendLine("Скетч штампа нарисован OK")
             Finally
