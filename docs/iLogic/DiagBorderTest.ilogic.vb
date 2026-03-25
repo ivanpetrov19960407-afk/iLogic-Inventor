@@ -124,6 +124,10 @@ Sub Main()
                     ThisApplication.TransientGeometry.CreatePoint2d(-19.0, 4.5),
                     ThisApplication.TransientGeometry.CreatePoint2d(0.0, 6.0),
                     "<Prompt>CODE</Prompt>")
+                Try
+                    tb.Style.FontSize = doc.UnitsOfMeasure.ConvertUnits(1.4, UnitsTypeEnum.kMillimeterLengthUnits, UnitsTypeEnum.kCentimeterLengthUnits)
+                Catch
+                End Try
                 log.AppendLine("Скетч штампа нарисован OK")
             Finally
                 tbDef.ExitEdit(True)

@@ -76,6 +76,7 @@ Public Class SpdsFramer
     Private Const FRAME_O_MM  As Double = 5.0
     Private Const TB_W_MM     As Double = 185.0
     Private Const TB_H_MM     As Double = 55.0
+    Private Const TITLE_TEXT_HEIGHT_MM As Double = 1.4
     Private Const BORDER_NAME As String = "RKM_SPDS_A3_BORDER_V12"
     Private Const TB_NAME     As String = "RKM_SPDS_A3_FORM3_V17"
 
@@ -274,11 +275,20 @@ Public Class SpdsFramer
         Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x0+Cm(doc,l), y0+Cm(doc,b)), P(x0+Cm(doc,r), y0+Cm(doc,t)), text)
         tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
         tb.VerticalJustification   = VerticalTextAlignmentEnum.kAlignTextMiddle
+        ApplyTitleTextStyle(doc, tb)
     End Sub
     Private Sub Prm(doc As DrawingDocument, sk As DrawingSketch, x0 As Double, y0 As Double, l As Double, b As Double, r As Double, t As Double, name As String)
         Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x0+Cm(doc,l), y0+Cm(doc,b)), P(x0+Cm(doc,r), y0+Cm(doc,t)), "<Prompt>" & name & "</Prompt>")
         tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
         tb.VerticalJustification   = VerticalTextAlignmentEnum.kAlignTextMiddle
+        ApplyTitleTextStyle(doc, tb)
+    End Sub
+
+    Private Sub ApplyTitleTextStyle(doc As DrawingDocument, tb As Inventor.TextBox)
+        Try
+            tb.Style.FontSize = Cm(doc, TITLE_TEXT_HEIGHT_MM)
+        Catch
+        End Try
     End Sub
 
     Private Function Cm(doc As DrawingDocument, mm As Double) As Double

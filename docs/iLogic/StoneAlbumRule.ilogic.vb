@@ -163,6 +163,7 @@ Public Class AlbumBuilder
     Private Const FRAME_O_MM    As Double = 5.0
     Private Const TB_W_MM       As Double = 185.0
     Private Const TB_H_MM       As Double = 55.0
+    Private Const TITLE_TEXT_HEIGHT_MM As Double = 1.4
     Private Const BORDER_NAME   As String = "RKM_SPDS_A3_BORDER_V12"
     Private Const TB_NAME       As String = "RKM_SPDS_A3_FORM3_V17"
     Private Const SHEET_PFX     As String = "ALB_"
@@ -3388,12 +3389,21 @@ Public Class AlbumBuilder
         Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x1 + Cm(doc, x0Mm), y1 + Cm(doc, y0Mm)), P(x1 + Cm(doc, x1Mm), y1 + Cm(doc, y1Mm)), caption)
         tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
         tb.VerticalJustification = VerticalTextAlignmentEnum.kAlignTextMiddle
+        ApplyTitleTextStyle(doc, tb)
     End Sub
 
     Private Sub Prm(doc As DrawingDocument, sk As DrawingSketch, x1 As Double, y1 As Double, x0Mm As Double, y0Mm As Double, x1Mm As Double, y1Mm As Double, promptName As String)
         Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x1 + Cm(doc, x0Mm), y1 + Cm(doc, y0Mm)), P(x1 + Cm(doc, x1Mm), y1 + Cm(doc, y1Mm)), "<Prompt>" & promptName & "</Prompt>")
         tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
         tb.VerticalJustification = VerticalTextAlignmentEnum.kAlignTextMiddle
+        ApplyTitleTextStyle(doc, tb)
+    End Sub
+
+    Private Sub ApplyTitleTextStyle(doc As DrawingDocument, tb As Inventor.TextBox)
+        Try
+            tb.Style.FontSize = Cm(doc, TITLE_TEXT_HEIGHT_MM)
+        Catch
+        End Try
     End Sub
 
     Private Function MakeUniqueSheetName(doc As DrawingDocument, baseName As String) As String
