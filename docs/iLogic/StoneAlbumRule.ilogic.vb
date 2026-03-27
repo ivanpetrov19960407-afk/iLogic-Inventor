@@ -508,93 +508,40 @@ Public Class AlbumBuilder
         Dim safe As SlotRect = GetSheetSafeRect(doc, sheet)
         Dim gap As Double = Cm(doc, GAP_MM)
 
-        Dim mFront As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kFrontViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "FRONT", "Вид спереди")
-        Dim mBack As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kBackViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "BACK", "Вид сзади")
         Dim mTop As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "TOP", "Вид сверху")
-        Dim mLeft As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kLeftViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "LEFT", "Вид слева")
-        Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "RIGHT", "Вид справа")
-        Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, ResolveIsoDrawingStyle(), "ISO", "Изометрия")
-        If mIso Is Nothing Then
-            Debug.Print("WARN: iso completely unavailable, continue without iso")
+        Dim mSide As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kLeftViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "LEFT", "Вид слева")
+        If mSide Is Nothing OrElse mSide.CurveCount = 0 Then
+            mSide = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "RIGHT", "Вид справа")
         End If
-        Dim all2D As List(Of ViewMeasure) = BuildAll2DCandidates(mFront, mBack, mTop, mLeft, mRight)
-        If all2D Is Nothing OrElse all2D.Count < 2 Then
-            failReason = SheetBuildFailReason.ProbeMeasureFailed
-            Debug.Print("WARN: недостаточно 2D-кандидатов для подбора layout")
-            Return False
-        End If
+        Dim mIso1 As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, ResolveIsoDrawingStyle(), "ISO1", "Изометрия 1")
+        Dim mIso2 As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopLeftViewOrientation, ResolveIsoDrawingStyle(), "ISO2", "Изометрия 2")
 
-        Dim descriptor As PartDescriptor = ClassifyPart(all2D)
-        DebugPrintDescriptor(descriptor)
+        Dim w As Double = RectW(safe)
+        Dim h As Double = RectH(safe)
+        Dim midX As Double = safe.L + w * 0.45
+        Dim midY As Double = safe.B + h * 0.5
+        Dim pad As Double = gap * 0.5
 
-        Dim roleMap As RoleMap = ResolveRoles(descriptor, all2D, mIso)
-        DebugPrintRoleMap(roleMap)
+        Dim slotTop As New SlotRect(safe.L, midX - pad, midY + pad, safe.T)
+        Dim slotSide As New SlotRect(safe.L, midX - pad, safe.B, midY - pad)
+        Dim slotIso1 As New SlotRect(midX + pad, safe.R, midY + pad, safe.T)
+        Dim slotIso2 As New SlotRect(midX + pad, safe.R, safe.B, midY - pad)
 
-        Dim templates As List(Of LayoutTemplate) = BuildLayoutTemplates(doc, safe, gap, descriptor)
-        If templates Is Nothing OrElse templates.Count = 0 Then
-            Debug.Print("WARN: не удалось построить шаблоны layout")
-            Return False
-        End If
+        Dim fitTop As FitResult = ScaleToFit(slotTop, mTop, ORTHO_SCALE_MARGIN)
+        Dim fitSide As FitResult = ScaleToFit(slotSide, mSide, ORTHO_SCALE_MARGIN)
+        Dim fitIso1 As FitResult = ScaleToFit(slotIso1, mIso1, ISO_SCALE_MARGIN)
+        Dim fitIso2 As FitResult = ScaleToFit(slotIso2, mIso2, ISO_SCALE_MARGIN)
 
-        Dim best As LayoutPlan = EvaluateBestTemplate(templates, descriptor, roleMap)
-        If best Is Nothing Then
-            failReason = SheetBuildFailReason.LayoutSelectionFailed
-            Debug.Print("WARN: не найден корректный layout визуализации")
-            Return False
-        End If
+        Dim placedViews As New Dictionary(Of ViewRole, DrawingView)()
+        If fitTop IsNot Nothing Then placedViews(ViewRole.PlanContour) = PlaceViewInSlot(sheet, modelDoc, mTop, fitTop, slotTop)
+        If fitSide IsNot Nothing Then placedViews(ViewRole.CrossProfile) = PlaceViewInSlot(sheet, modelDoc, mSide, fitSide, slotSide)
+        If fitIso1 IsNot Nothing Then placedViews(ViewRole.IsoReference) = PlaceViewInSlot(sheet, modelDoc, mIso1, fitIso1, slotIso1)
+        If fitIso2 IsNot Nothing Then PlaceViewInSlot(sheet, modelDoc, mIso2, fitIso2, slotIso2)
 
-        If FORCE_ISOMETRIC_VIEWS Then
-            best.MainMeasure = ForceIsometricMeasure(best.MainMeasure, mIso)
-            best.Aux1Measure = ForceIsometricMeasure(best.Aux1Measure, mIso)
-            best.Aux2Measure = ForceIsometricMeasure(best.Aux2Measure, mIso)
-
-            best.MainFit = ScaleToFit(best.MainSlot, best.MainMeasure, ISO_SCALE_MARGIN)
-            best.Aux1Fit = ScaleToFit(best.Aux1Slot, best.Aux1Measure, ISO_SCALE_MARGIN)
-            If best.Aux2Measure IsNot Nothing Then
-                best.Aux2Fit = ScaleToFit(best.Aux2Slot, best.Aux2Measure, ISO_SCALE_MARGIN)
-            End If
-            If best.MainFit Is Nothing OrElse best.Aux1Fit Is Nothing Then
-                failReason = SheetBuildFailReason.LayoutSelectionFailed
-                Debug.Print("WARN: изометрический layout не рассчитан")
-                Return False
-            End If
-        End If
-
-        Debug.Print("Layout template=" & best.TemplateName & ", score=" & String.Format("{0:F3}", best.Score))
-
-        Dim placedViews As Dictionary(Of ViewRole, DrawingView) = PlaceViewsByTemplate(sheet, modelDoc, best, roleMap)
-        If placedViews Is Nothing OrElse placedViews.Count = 0 Then
+        If placedViews.Count < 2 Then
             failReason = SheetBuildFailReason.ViewPlacementFailed
-            Debug.Print("WARN: не удалось разместить виды по template")
             Return False
         End If
-
-        If Not FORCE_ISOMETRIC_VIEWS Then
-            Dim finalOrthogonal As Integer = 0
-            If placedViews.ContainsKey(best.MainRole) Then finalOrthogonal += 1
-            If placedViews.ContainsKey(best.AuxRole) Then finalOrthogonal += 1
-            If finalOrthogonal < 2 Then
-                failReason = SheetBuildFailReason.LessThan2FinalViews
-                Debug.Print("WARN: после размещения менее 2 ортогональных видов")
-                Return False
-            End If
-        End If
-
-        If ADD_VIEW_NOTES Then
-            AddViewRoleCaptions(doc, sheet, best, placedViews)
-        End If
-
-        If ADD_VIEW_DIMENSIONS Then
-            Dim dimPlan As DimensionPlan = BuildDimensionPlan(descriptor, roleMap)
-            DebugPrintDimensionPlan(dimPlan)
-            Try
-                ApplyDimensionPlan(doc, sheet, placedViews, roleMap, descriptor, dimPlan, modelSize)
-            Catch ex As Exception
-                Debug.Print("WARN dimensioning failed: " & ex.Message & "; views preserved")
-            End Try
-        End If
-
-        Debug.Print("INFO final view count on sheet '" & sheet.Name & "': " & sheet.DrawingViews.Count.ToString())
 
         Return True
     End Function
