@@ -307,6 +307,13 @@ Public Class AlbumBuilder
             Debug.Print("WARN: путь модели не разрешён, строка Excel=" & rowIndex.ToString() & ", исходное значение='" & item.SourceModelRaw & "'")
             Return False
         End If
+        Try
+            item.ModelPath = System.IO.Path.GetFullPath(item.ModelPath)
+        Catch ex As Exception
+            _lastBuildFailReason = SheetBuildFailReason.ModelPathUnresolved
+            Debug.Print("WARN: некорректный путь модели, строка Excel=" & rowIndex.ToString() & ", путь='" & item.ModelPath & "', ошибка=" & ex.Message)
+            Return False
+        End Try
         If Not System.IO.File.Exists(item.ModelPath) Then
             _lastBuildFailReason = SheetBuildFailReason.FileNotFound
             Debug.Print("WARN: модель не найдена, строка Excel=" & rowIndex.ToString() & ", путь=" & item.ModelPath)
