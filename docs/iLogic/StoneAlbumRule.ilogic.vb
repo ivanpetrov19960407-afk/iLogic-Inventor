@@ -230,6 +230,12 @@ Public Class AlbumBuilder
 
             For i As Integer = 0 To items.Count - 1
                 Dim item As AlbumItem = items(i)
+                Try
+                    _app.StatusBarText = "Сборка альбома: " & (i + 1).ToString() & "/" & items.Count.ToString()
+                    _app.UserInterfaceManager.DoEvents()
+                Catch
+                    System.Windows.Forms.Application.DoEvents()
+                End Try
                 Dim promptSheet As String = String.Empty
                 Dim promptSheets As String = String.Empty
                 item.Prompts.TryGetValue("SHEET", promptSheet)
@@ -500,7 +506,7 @@ Public Class AlbumBuilder
         Dim mTop As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kTopViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "TOP", "Вид сверху")
         Dim mLeft As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kLeftViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "LEFT", "Вид слева")
         Dim mRight As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle, "RIGHT", "Вид справа")
-        Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, DrawingViewStyleEnum.kShadedDrawingViewStyle, "ISO", "Изометрия")
+        Dim mIso As ViewMeasure = MeasureView(sheet, modelDoc, ViewOrientationTypeEnum.kIsoTopRightViewOrientation, ResolveIsoDrawingStyle(), "ISO", "Изометрия")
         If mIso Is Nothing Then
             Debug.Print("WARN: iso completely unavailable, continue without iso")
         End If
@@ -830,7 +836,7 @@ Public Class AlbumBuilder
         result.Key = source.Key
         result.Caption = "Изометрия"
         result.Orientation = ViewOrientationTypeEnum.kIsoTopRightViewOrientation
-        result.Style = DrawingViewStyleEnum.kShadedDrawingViewStyle
+        result.Style = ResolveIsoDrawingStyle()
 
         If isoMeasure IsNot Nothing Then
             result.UnitW = isoMeasure.UnitW
@@ -2750,7 +2756,7 @@ Public Class AlbumBuilder
             Dim pt As Point2d = _app.TransientGeometry.CreatePoint2d(cx, cy)
 
             Dim fallbackStyle As DrawingViewStyleEnum = measure.Style
-            If measure.Orientation = ViewOrientationTypeEnum.kIsoTopRightViewOrientation AndAlso measure.Style = DrawingViewStyleEnum.kShadedDrawingViewStyle Then
+            If measure.Orientation = ViewOrientationTypeEnum.kIsoTopRightViewOrientation AndAlso measure.Style = ResolveIsoDrawingStyle() Then
                 fallbackStyle = DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle
             End If
 
@@ -3036,7 +3042,7 @@ Public Class AlbumBuilder
                                              preferredStyle As DrawingViewStyleEnum) As List(Of DrawingViewStyleEnum)
         Dim styles As New List(Of DrawingViewStyleEnum)()
         If orientation = ViewOrientationTypeEnum.kIsoTopRightViewOrientation Then
-            styles.Add(DrawingViewStyleEnum.kShadedDrawingViewStyle)
+            styles.Add(ResolveIsoDrawingStyle())
             styles.Add(DrawingViewStyleEnum.kHiddenLineRemovedDrawingViewStyle)
             styles.Add(DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
         Else
@@ -3045,6 +3051,14 @@ Public Class AlbumBuilder
         End If
         If Not styles.Contains(preferredStyle) Then styles.Insert(0, preferredStyle)
         Return styles
+    End Function
+
+    Private Function ResolveIsoDrawingStyle() As DrawingViewStyleEnum
+        Try
+            Return DrawingViewStyleEnum.kShadedHiddenLineDrawingViewStyle
+        Catch
+            Return DrawingViewStyleEnum.kShadedDrawingViewStyle
+        End Try
     End Function
 
     Private Function TryCreateProbeBaseView(sheet As Sheet,
@@ -3214,11 +3228,39 @@ Public Class AlbumBuilder
             result.LengthMm = a
             result.WidthMm = b
             result.ThicknessMm = c
+            result.MassKg = ComputeStoneMassKg(modelDoc)
             result.IsValid = (result.LengthMm > 0 AndAlso result.WidthMm > 0 AndAlso result.ThicknessMm > 0)
         Catch ex As Exception
             Debug.Print("WARN GetModelOverallExtentsMm: " & ex.Message)
         End Try
         Return result
+    End Function
+
+    Private Function ComputeStoneMassKg(modelDoc As Document) As Double
+        Try
+            Dim mp As MassProperties = Nothing
+            If TypeOf modelDoc Is PartDocument Then
+                mp = DirectCast(modelDoc, PartDocument).ComponentDefinition.MassProperties
+            ElseIf TypeOf modelDoc Is AssemblyDocument Then
+                mp = DirectCast(modelDoc, AssemblyDocument).ComponentDefinition.MassProperties
+            End If
+            If mp Is Nothing Then Return 0.0
+
+            Dim densityKgM3 As Double = 2800.0
+            Try
+                Dim densityText As String = CStr(iProperties.Value("Custom", "StoneDensityKgM3"))
+                Dim parsed As Double = 0.0
+                If Double.TryParse(densityText, parsed) AndAlso parsed > 0 Then
+                    densityKgM3 = parsed
+                End If
+            Catch
+            End Try
+
+            Dim volumeCm3 As Double = mp.Volume
+            Return (volumeCm3 / 1000000.0) * densityKgM3
+        Catch
+            Return 0.0
+        End Try
     End Function
 
     ''' <summary>Convert mm to internal drawing units (cm in Inventor IDW).</summary>
@@ -3488,6 +3530,7 @@ Public Class ModelOverallExtents
     Public LengthMm As Integer
     Public WidthMm As Integer
     Public ThicknessMm As Integer
+    Public MassKg As Double
     Public IsValid As Boolean
 End Class
 

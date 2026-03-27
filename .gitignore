@@ -1,0 +1,16 @@
+# Build artifacts
+bin/
+obj/
+Bin/
+Obj/
+
+# Inventor / iLogic artifacts
+*.old
+*.log
+*_V
+_V/
+
+# Temporary files
+*.tmp
+*.bak
+~$*
