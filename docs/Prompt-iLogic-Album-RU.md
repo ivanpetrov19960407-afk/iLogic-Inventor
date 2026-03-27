@@ -39,3 +39,58 @@
    - `ViewLayout`
    - `Dimensioning`
 3. Сверяйте итоговую логику с исходными VBA-модулями из `legacy_vba/`.
+
+---
+
+## Prompt: исправление ошибок компиляции iLogic (RU)
+
+Ниже — готовый промт для случаев, когда iLogic/VB.NET падает с ошибками вида:
+- `Required one of these operators: 'Dim', 'Const', 'Public', ...`
+- `Declaration expected`
+- ошибка на ранних строках (часто `line 3`) из-за незакомментированного русского текста.
+
+### Copy-Paste промт
+
+**Role:** Senior Autodesk Inventor Developer (iLogic/VB.NET expert).
+
+**Task:** Fix compilation errors in the provided iLogic code.
+
+**Context:**  
+I get errors like:
+- `Required one of these operators: 'Dim', 'Const', 'Public', etc.`
+- `Declaration expected` (for example at line 3)
+
+This is usually caused by unquoted Russian text that is parsed as code instead of comments.
+
+**Code to Fix (paste full script):**
+```vbnet
+[ВСТАВЬТЕ СЮДА ВЕСЬ ТЕКСТ ВАШЕГО СКРИПТА]
+```
+
+**Instructions for AI:**
+1. **Fix Syntax**
+   - Ensure all Russian descriptions/notes are commented out with a leading `'`.
+   - Example:  
+     `Установить А3 альбомная` → `' Установить А3 альбомная`.
+2. **Strict iLogic/VB.NET**
+   - Verify every non-comment line is valid VB.NET declaration or statement.
+   - Ensure all executable lines are inside `Sub Main()` (or inside class members where appropriate).
+   - Check `SpdsFramer` class members for valid declarations.
+3. **Encoding**
+   - Keep UTF-8 encoding to preserve Cyrillic text in comments and strings.
+4. **Formatting**
+   - Do not shorten code.
+   - Return the full corrected document, ready for paste into iLogic Rule Editor.
+
+### Что проверить вручную (быстрый чек-лист)
+
+1. На проблемной ранней строке (например, строка 3) русский текст должен начинаться с `'`.
+2. Перед `Sub ApplyBorder` и другими `Sub/Function` не должно быть «голого» текста.
+3. Любая кириллица в коде должна быть:
+   - либо в строковом литерале (`"Наименование объекта"`),
+   - либо в комментарии (`' Наименование объекта`).
+4. После вставки в iLogic убедитесь, что комментарии подсвечены как комментарии (обычно серым).
+
+### Важно
+
+Если не вставить **полный исходный скрипт**, модель не сможет безопасно исправить все места и вернёт только общие рекомендации.
