@@ -1,0 +1,45 @@
+Option Explicit On
+Imports Inventor
+
+Sub Main()
+    Dim app As Inventor.Application = ThisApplication
+    Dim doc As DrawingDocument = TryCast(app.ActiveDocument, DrawingDocument)
+
+    If doc Is Nothing Then
+        System.Windows.Forms.MessageBox.Show("Откройте документ чертежа (.idw или .dwg).", "Извлечение аннотаций")
+        Return
+    End If
+
+    Dim processed As Integer = 0
+    Dim skipped As Integer = 0
+
+    ' Проходим по всем листам в документе
+    For Each sh As Sheet In doc.Sheets
+        ' Проходим по всем видам на текущем листе
+        For Each v As DrawingView In sh.DrawingViews
+            Try
+                ' 1. Извлечение параметрических размеров (из эскизов и элементов)
+                ' Метод Retrieve вытягивает все применимые к данному виду размеры
+                sh.DrawingDimensions.GeneralDimensions.Retrieve(v)
+
+                ' 2. Включение 3D-аннотаций (PMI), добавленных непосредственно в 3D-модели
+                ' (Свойство Include3DAnnotations доступно в Inventor 2022 и новее)
+                Try
+                    v.Include3DAnnotations = True
+                Catch
+                    ' Пропускаем, если версия Inventor не поддерживает это свойство
+                End Try
+
+                processed += 1
+            Catch ex As Exception
+                skipped += 1
+            End Try
+        Next
+    Next
+
+    ' Обновляем чертеж для отображения изменений
+    doc.Update2(True)
+
+    System.Windows.Forms.MessageBox.Show("Обработано видов: " & processed.ToString() & vbCrLf &
+                                         "Пропущено: " & skipped.ToString(), "Готово")
+End Sub
