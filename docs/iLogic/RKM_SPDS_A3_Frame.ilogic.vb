@@ -76,6 +76,8 @@ Public Class SpdsFramer
     Private Const FRAME_O_MM  As Double = 5.0
     Private Const TB_W_MM     As Double = 185.0
     Private Const TB_H_MM     As Double = 55.0
+    Private Const TITLE_TEXT_HEIGHT_MM As Double = 1.4
+    Private Const TITLE_TEXT_STYLE_NAME As String = "RKM_SPDS_Title_1_4mm"
     Private Const BORDER_NAME As String = "RKM_SPDS_A3_BORDER_V12"
     Private Const TB_NAME     As String = "RKM_SPDS_A3_FORM3_V17"
 
@@ -274,11 +276,37 @@ Public Class SpdsFramer
         Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x0+Cm(doc,l), y0+Cm(doc,b)), P(x0+Cm(doc,r), y0+Cm(doc,t)), text)
         tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
         tb.VerticalJustification   = VerticalTextAlignmentEnum.kAlignTextMiddle
+        ApplyTitleTextStyle(doc, tb)
     End Sub
     Private Sub Prm(doc As DrawingDocument, sk As DrawingSketch, x0 As Double, y0 As Double, l As Double, b As Double, r As Double, t As Double, name As String)
         Dim tb As Inventor.TextBox = sk.TextBoxes.AddByRectangle(P(x0+Cm(doc,l), y0+Cm(doc,b)), P(x0+Cm(doc,r), y0+Cm(doc,t)), "<Prompt>" & name & "</Prompt>")
         tb.HorizontalJustification = HorizontalTextAlignmentEnum.kAlignTextCenter
         tb.VerticalJustification   = VerticalTextAlignmentEnum.kAlignTextMiddle
+        ApplyTitleTextStyle(doc, tb)
+    End Sub
+
+    Private Sub ApplyTitleTextStyle(doc As DrawingDocument, tb As Inventor.TextBox)
+        Dim titleStyle As TextStyle = Nothing
+
+        Try
+            titleStyle = doc.StylesManager.TextStyles.Item(TITLE_TEXT_STYLE_NAME)
+        Catch
+        End Try
+
+        If titleStyle Is Nothing Then
+            Try
+                titleStyle = tb.Style.Copy(TITLE_TEXT_STYLE_NAME)
+            Catch
+            End Try
+        End If
+
+        If titleStyle Is Nothing Then Return
+
+        Try
+            titleStyle.FontSize = Cm(doc, TITLE_TEXT_HEIGHT_MM)
+            tb.Style = titleStyle
+        Catch
+        End Try
     End Sub
 
     Private Function Cm(doc As DrawingDocument, mm As Double) As Double
