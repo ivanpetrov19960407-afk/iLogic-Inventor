@@ -169,7 +169,7 @@ Public Class AlbumBuilder
     Private Const TB_NAME       As String = "RKM_SPDS_A3_FORM3_V17"
     Private Const SHEET_PFX     As String = "ALB_"
     Private Const ALBUM_MODE_VISUAL As Boolean = True
-    Private Const ADD_VIEW_NOTES As Boolean = True
+    Private Const ADD_VIEW_NOTES As Boolean = False
     Private Const ADD_VIEW_DIMENSIONS As Boolean = True
     Private Const DIMENSIONS_ON_MAIN_ISO As Boolean = False
     Private Const FORCE_ISOMETRIC_VIEWS As Boolean = True
