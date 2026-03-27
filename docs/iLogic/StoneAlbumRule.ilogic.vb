@@ -170,7 +170,7 @@ Public Class AlbumBuilder
     Private Const SHEET_PFX     As String = "ALB_"
     Private Const ALBUM_MODE_VISUAL As Boolean = True
     Private Const ADD_VIEW_NOTES As Boolean = False
-    Private Const ADD_VIEW_DIMENSIONS As Boolean = True
+    Private Const ADD_VIEW_DIMENSIONS As Boolean = False
     Private Const DIMENSIONS_ON_MAIN_ISO As Boolean = False
     Private Const FORCE_ISOMETRIC_VIEWS As Boolean = True
     Private Const VIEW_CAPTION_GAP_MM As Double = 5.0
