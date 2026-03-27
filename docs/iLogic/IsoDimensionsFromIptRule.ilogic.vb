@@ -75,7 +75,8 @@ End Sub
 
 Private Function IsIsometric(v As DrawingView) As Boolean
     If v Is Nothing Then Return False
-    Select Case v.ViewOrientation
+    ' Исправлено: свойство должно называться ViewOrientationType
+    Select Case v.ViewOrientationType
         Case ViewOrientationTypeEnum.kIsoTopLeftViewOrientation,
              ViewOrientationTypeEnum.kIsoTopRightViewOrientation,
              ViewOrientationTypeEnum.kIsoBottomLeftViewOrientation,
