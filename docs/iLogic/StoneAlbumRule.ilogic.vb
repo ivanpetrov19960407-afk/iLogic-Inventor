@@ -3248,7 +3248,8 @@ Public Class AlbumBuilder
 
             Dim densityKgM3 As Double = 2800.0
             Try
-                Dim densityText As String = CStr(iProperties.Value("Custom", "StoneDensityKgM3"))
+                Dim propSet As PropertySet = modelDoc.PropertySets.Item("Inventor User Defined Properties")
+                Dim densityText As String = CStr(propSet.Item("StoneDensityKgM3").Value)
                 Dim parsed As Double = 0.0
                 If Double.TryParse(densityText, parsed) AndAlso parsed > 0 Then
                     densityKgM3 = parsed
