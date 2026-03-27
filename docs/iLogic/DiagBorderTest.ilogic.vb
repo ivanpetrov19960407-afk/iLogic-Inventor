@@ -125,7 +125,16 @@ Sub Main()
                     ThisApplication.TransientGeometry.CreatePoint2d(0.0, 6.0),
                     "<Prompt>CODE</Prompt>")
                 Try
-                    tb.Style.FontSize = doc.UnitsOfMeasure.ConvertUnits(1.4, UnitsTypeEnum.kMillimeterLengthUnits, UnitsTypeEnum.kCentimeterLengthUnits)
+                    Dim diagTitleStyle As TextStyle = Nothing
+                    Try
+                        diagTitleStyle = doc.StylesManager.TextStyles.Item("RKM_SPDS_DIAG_Title_1_4mm")
+                    Catch
+                    End Try
+                    If diagTitleStyle Is Nothing Then
+                        diagTitleStyle = tb.Style.Copy("RKM_SPDS_DIAG_Title_1_4mm")
+                        diagTitleStyle.FontSize = doc.UnitsOfMeasure.ConvertUnits(1.4, UnitsTypeEnum.kMillimeterLengthUnits, UnitsTypeEnum.kCentimeterLengthUnits)
+                    End If
+                    tb.Style = diagTitleStyle
                 Catch
                 End Try
                 log.AppendLine("Скетч штампа нарисован OK")

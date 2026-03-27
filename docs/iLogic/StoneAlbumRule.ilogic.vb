@@ -164,6 +164,7 @@ Public Class AlbumBuilder
     Private Const TB_W_MM       As Double = 185.0
     Private Const TB_H_MM       As Double = 55.0
     Private Const TITLE_TEXT_HEIGHT_MM As Double = 1.4
+    Private Const TITLE_TEXT_STYLE_NAME As String = "RKM_SPDS_Title_1_4mm"
     Private Const BORDER_NAME   As String = "RKM_SPDS_A3_BORDER_V12"
     Private Const TB_NAME       As String = "RKM_SPDS_A3_FORM3_V17"
     Private Const SHEET_PFX     As String = "ALB_"
@@ -3400,8 +3401,25 @@ Public Class AlbumBuilder
     End Sub
 
     Private Sub ApplyTitleTextStyle(doc As DrawingDocument, tb As Inventor.TextBox)
+        Dim titleStyle As TextStyle = Nothing
+
         Try
-            tb.Style.FontSize = Cm(doc, TITLE_TEXT_HEIGHT_MM)
+            titleStyle = doc.StylesManager.TextStyles.Item(TITLE_TEXT_STYLE_NAME)
+        Catch
+        End Try
+
+        If titleStyle Is Nothing Then
+            Try
+                titleStyle = tb.Style.Copy(TITLE_TEXT_STYLE_NAME)
+            Catch
+            End Try
+        End If
+
+        If titleStyle Is Nothing Then Return
+
+        Try
+            titleStyle.FontSize = Cm(doc, TITLE_TEXT_HEIGHT_MM)
+            tb.Style = titleStyle
         Catch
         End Try
     End Sub
