@@ -15,6 +15,7 @@ Sub Main()
     Dim processed As Integer = 0
     Dim skipped As Integer = 0
     Dim arranged As Integer = 0
+    Dim clamped As Integer = 0
 
     ' Проходим по всем листам в документе
     For Each sh As Sheet In doc.Sheets
@@ -41,6 +42,9 @@ Sub Main()
 
         ' 3. Упорядочиваем размеры на листе (группируем по ориентации и применяем Arrange)
         arranged += ArrangeDimensionsOnSheet(sh, app)
+
+        ' 4. Ограничиваем положение размеров рамками листа
+        clamped += ClampDimensionsToSheetBounds(sh, app)
     Next
 
     ' Обновляем чертеж для отображения изменений
@@ -48,7 +52,8 @@ Sub Main()
 
     System.Windows.Forms.MessageBox.Show("Обработано видов: " & processed.ToString() & vbCrLf &
                                          "Пропущено: " & skipped.ToString() & vbCrLf &
-                                         "Упорядочено размеров: " & arranged.ToString(), "Готово")
+                                         "Упорядочено размеров: " & arranged.ToString() & vbCrLf &
+                                         "Возвращено в границы листа: " & clamped.ToString(), "Готово")
 End Sub
 
 Private Function ArrangeDimensionsOnSheet(sh As Sheet, app As Inventor.Application) As Integer
@@ -84,6 +89,46 @@ Private Function ArrangeDimensionsOnSheet(sh As Sheet, app As Inventor.Applicati
     arrangedCount += ArrangeBucket(sh, app, angled)
 
     Return arrangedCount
+End Function
+
+Private Function ClampDimensionsToSheetBounds(sh As Sheet, app As Inventor.Application) As Integer
+    If sh Is Nothing OrElse app Is Nothing Then Return 0
+
+    Dim moved As Integer = 0
+    Dim tg As TransientGeometry = app.TransientGeometry
+    If tg Is Nothing Then Return 0
+
+    ' Небольшой отступ от кромок листа, чтобы текст не "прилипал" к границе.
+    Dim margin As Double = 1.0
+    Dim minX As Double = margin
+    Dim minY As Double = margin
+    Dim maxX As Double = Math.Max(minX, sh.Width - margin)
+    Dim maxY As Double = Math.Max(minY, sh.Height - margin)
+
+    For Each gd As GeneralDimension In sh.DrawingDimensions.GeneralDimensions
+        If gd Is Nothing Then Continue For
+
+        Try
+            Dim x As Double = gd.Text.Origin.X
+            Dim y As Double = gd.Text.Origin.Y
+            Dim clampedX As Double = x
+            Dim clampedY As Double = y
+
+            If clampedX < minX Then clampedX = minX
+            If clampedX > maxX Then clampedX = maxX
+            If clampedY < minY Then clampedY = minY
+            If clampedY > maxY Then clampedY = maxY
+
+            If Math.Abs(clampedX - x) > 0.000001 OrElse Math.Abs(clampedY - y) > 0.000001 Then
+                gd.Text.Origin = tg.CreatePoint2d(clampedX, clampedY)
+                moved += 1
+            End If
+        Catch
+            ' Не все типы размеров/состояния позволяют перемещать текст.
+        End Try
+    Next
+
+    Return moved
 End Function
 
 ' 0 = горизонтальные, 1 = вертикальные, 2 = прочие/наклонные
