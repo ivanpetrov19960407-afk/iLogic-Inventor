@@ -1,5 +1,7 @@
 Option Explicit On
 Imports Inventor
+Imports System
+Imports System.Collections.Generic
 
 Sub Main()
     Dim app As Inventor.Application = ThisApplication
@@ -12,6 +14,7 @@ Sub Main()
 
     Dim processed As Integer = 0
     Dim skipped As Integer = 0
+    Dim arranged As Integer = 0
 
     ' Проходим по всем листам в документе
     For Each sh As Sheet In doc.Sheets
@@ -31,15 +34,127 @@ Sub Main()
                 End Try
 
                 processed += 1
-            Catch ex As Exception
+            Catch
                 skipped += 1
             End Try
         Next
+
+        ' 3. Упорядочиваем размеры на листе (группируем по ориентации и применяем Arrange)
+        arranged += ArrangeDimensionsOnSheet(sh, app)
     Next
 
     ' Обновляем чертеж для отображения изменений
     doc.Update2(True)
 
     System.Windows.Forms.MessageBox.Show("Обработано видов: " & processed.ToString() & vbCrLf &
-                                         "Пропущено: " & skipped.ToString(), "Готово")
+                                         "Пропущено: " & skipped.ToString() & vbCrLf &
+                                         "Упорядочено размеров: " & arranged.ToString(), "Готово")
 End Sub
+
+Private Function ArrangeDimensionsOnSheet(sh As Sheet, app As Inventor.Application) As Integer
+    If sh Is Nothing OrElse app Is Nothing Then Return 0
+
+    Dim horizontal As New List(Of GeneralDimension)()
+    Dim vertical As New List(Of GeneralDimension)()
+    Dim angled As New List(Of GeneralDimension)()
+
+    For Each gd As GeneralDimension In sh.DrawingDimensions.GeneralDimensions
+        If gd Is Nothing Then Continue For
+
+        ' Базовый шаг: текст в центр, чтобы после Arrange подписи выглядели ровнее.
+        Try
+            gd.CenterText()
+        Catch
+        End Try
+
+        Dim bucket As Integer = GetDimensionBucket(gd)
+        Select Case bucket
+            Case 0
+                horizontal.Add(gd)
+            Case 1
+                vertical.Add(gd)
+            Case Else
+                angled.Add(gd)
+        End Select
+    Next
+
+    Dim arrangedCount As Integer = 0
+    arrangedCount += ArrangeBucket(sh, app, horizontal)
+    arrangedCount += ArrangeBucket(sh, app, vertical)
+    arrangedCount += ArrangeBucket(sh, app, angled)
+
+    Return arrangedCount
+End Function
+
+' 0 = горизонтальные, 1 = вертикальные, 2 = прочие/наклонные
+Private Function GetDimensionBucket(gd As GeneralDimension) As Integer
+    Try
+        Dim ld As LinearGeneralDimension = TryCast(gd, LinearGeneralDimension)
+        If ld IsNot Nothing Then
+            Select Case ld.DimensionType
+                Case DimensionTypeEnum.kHorizontalDimensionType
+                    Return 0
+                Case DimensionTypeEnum.kVerticalDimensionType
+                    Return 1
+                Case Else
+                    Return 2
+            End Select
+        End If
+    Catch
+    End Try
+
+    Return 2
+End Function
+
+Private Function ArrangeBucket(sh As Sheet,
+                               app As Inventor.Application,
+                               dims As List(Of GeneralDimension)) As Integer
+    If sh Is Nothing OrElse app Is Nothing Then Return 0
+    If dims Is Nothing OrElse dims.Count = 0 Then Return 0
+
+    ' Сортируем, чтобы Arrange получал размеры в устойчивом порядке:
+    ' сверху-вниз, затем слева-направо.
+    dims.Sort(AddressOf CompareDimensionsByTextOrigin)
+
+    Dim col As ObjectCollection = app.TransientObjects.CreateObjectCollection()
+    For Each gd As GeneralDimension In dims
+        col.Add(gd)
+    Next
+
+    Try
+        sh.DrawingDimensions.Arrange(col)
+        Return dims.Count
+    Catch
+        Return 0
+    End Try
+End Function
+
+Private Function CompareDimensionsByTextOrigin(a As GeneralDimension,
+                                               b As GeneralDimension) As Integer
+    Dim ay As Double = 0.0
+    Dim ax As Double = 0.0
+    Dim by As Double = 0.0
+    Dim bx As Double = 0.0
+
+    Try
+        ay = a.Text.Origin.Y
+        ax = a.Text.Origin.X
+    Catch
+    End Try
+
+    Try
+        by = b.Text.Origin.Y
+        bx = b.Text.Origin.X
+    Catch
+    End Try
+
+    ' В системе координат листа обычно Y растет вверх.
+    ' Для удобства чтения сортируем с верхней части к нижней.
+    If ay > by Then Return -1
+    If ay < by Then Return 1
+
+    If ax < bx Then Return -1
+    If ax > bx Then Return 1
+
+    Return 0
+End Function
