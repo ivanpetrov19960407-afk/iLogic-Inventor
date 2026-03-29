@@ -17,23 +17,15 @@ Sub Main()
     Dim arranged As Integer = 0
     Dim clamped As Integer = 0
     Dim overlapResolved As Integer = 0
+    Dim commandRuns As Integer = 0
 
     ' Проходим по всем листам в документе
     For Each sh As Sheet In doc.Sheets
         ' Проходим по всем видам на текущем листе
         For Each v As DrawingView In sh.DrawingViews
             Try
-                ' 1. Извлечение параметрических размеров (из эскизов и элементов)
-                ' Метод Retrieve вытягивает все применимые к данному виду размеры
-                sh.DrawingDimensions.GeneralDimensions.Retrieve(v)
-
-                ' 2. Включение 3D-аннотаций (PMI), добавленных непосредственно в 3D-модели
-                ' (Свойство Include3DAnnotations доступно в Inventor 2022 и новее)
-                Try
-                    v.Include3DAnnotations = True
-                Catch
-                    ' Пропускаем, если версия Inventor не поддерживает это свойство
-                End Try
+                ' 1. Извлечение размеров/аннотаций через API + (по возможности) команды Inventor.
+                commandRuns += RetrieveForViewWithFallback(doc, sh, v, app)
 
                 processed += 1
             Catch
@@ -49,6 +41,9 @@ Sub Main()
 
         ' 5. Разводим размеры, чтобы они не накладывались друг на друга
         overlapResolved += ResolveDimensionOverlaps(sh, app)
+
+        ' 6. Финальная "жесткая" проверка — ни один размер не должен остаться за рамкой.
+        clamped += EnforceBoundsHard(sh, app)
     Next
 
     ' Обновляем чертеж для отображения изменений
@@ -58,8 +53,69 @@ Sub Main()
                                          "Пропущено: " & skipped.ToString() & vbCrLf &
                                          "Упорядочено размеров: " & arranged.ToString() & vbCrLf &
                                          "Возвращено в границы листа: " & clamped.ToString() & vbCrLf &
-                                         "Разведено пересечений: " & overlapResolved.ToString(), "Готово")
+                                         "Разведено пересечений: " & overlapResolved.ToString() & vbCrLf &
+                                         "Запусков команд Inventor: " & commandRuns.ToString(), "Готово")
 End Sub
+
+Private Function RetrieveForViewWithFallback(doc As DrawingDocument,
+                                             sh As Sheet,
+                                             v As DrawingView,
+                                             app As Inventor.Application) As Integer
+    If doc Is Nothing OrElse sh Is Nothing OrElse v Is Nothing OrElse app Is Nothing Then Return 0
+
+    Dim commandRuns As Integer = 0
+
+    ' A) Базовый путь: Retrieve через API (наиболее стабильный).
+    Try
+        sh.DrawingDimensions.GeneralDimensions.Retrieve(v)
+    Catch
+    End Try
+
+    ' B) PMI/3D-аннотации.
+    Try
+        v.Include3DAnnotations = True
+    Catch
+    End Try
+
+    ' C) Fallback: пробуем встроенные команды Inventor.
+    ' Команды могут отличаться между версиями/локалями, поэтому перебираем набор известных InternalName.
+    Dim retrieveCmdNames As String() = {
+        "DrawingRetrieveDimensionsCmd",
+        "DrawingRetrieveDimsCmd",
+        "DrawingGetModelAnnotationsCmd",
+        "DrawingRetrieveModelAnnotationsCmd"
+    }
+
+    Try
+        doc.Activate()
+    Catch
+    End Try
+
+    For Each cmdName As String In retrieveCmdNames
+        Try
+            Dim cmd As ControlDefinition = app.CommandManager.ControlDefinitions.Item(cmdName)
+            If cmd Is Nothing Then Continue For
+
+            Try
+                doc.SelectSet.Clear()
+                doc.SelectSet.Select(v)
+            Catch
+            End Try
+
+            Try
+                cmd.Execute2(True)
+            Catch
+                cmd.Execute()
+            End Try
+
+            commandRuns += 1
+        Catch
+            ' В конкретной версии команды может не быть — это ожидаемо.
+        End Try
+    Next
+
+    Return commandRuns
+End Function
 
 Private Function ArrangeDimensionsOnSheet(sh As Sheet, app As Inventor.Application) As Integer
     If sh Is Nothing OrElse app Is Nothing Then Return 0
@@ -233,6 +289,20 @@ Private Function ResolveDimensionOverlaps(sh As Sheet, app As Inventor.Applicati
     ' После разведения повторно прижимаем к рамке для гарантии.
     moved += ClampDimensionsToSheetBounds(sh, app)
     Return moved
+End Function
+
+Private Function EnforceBoundsHard(sh As Sheet, app As Inventor.Application) As Integer
+    If sh Is Nothing OrElse app Is Nothing Then Return 0
+
+    Dim totalMoved As Integer = 0
+    Dim maxPasses As Integer = 4
+    For pass As Integer = 1 To maxPasses
+        Dim movedOnPass As Integer = ClampDimensionsToSheetBounds(sh, app)
+        totalMoved += movedOnPass
+        If movedOnPass = 0 Then Exit For
+    Next
+
+    Return totalMoved
 End Function
 
 Private Function GetDimensionRangeBox(gd As GeneralDimension) As Box2d
