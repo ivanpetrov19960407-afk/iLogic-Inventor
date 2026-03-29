@@ -111,16 +111,31 @@ Private Function ClampDimensionsToSheetBounds(sh As Sheet, app As Inventor.Appli
         Try
             Dim x As Double = gd.Text.Origin.X
             Dim y As Double = gd.Text.Origin.Y
-            Dim clampedX As Double = x
-            Dim clampedY As Double = y
+            Dim shiftX As Double = 0.0
+            Dim shiftY As Double = 0.0
 
-            If clampedX < minX Then clampedX = minX
-            If clampedX > maxX Then clampedX = maxX
-            If clampedY < minY Then clampedY = minY
-            If clampedY > maxY Then clampedY = maxY
+            ' Пытаемся удержать в пределах листа весь размер (по RangeBox).
+            ' Если получить RangeBox не удалось, используем запасной вариант:
+            ' ограничиваем только позицию текста размера.
+            Dim rb As Box2d = GetDimensionRangeBox(gd)
+            If rb IsNot Nothing Then
+                If rb.MinPoint.X < minX Then shiftX = minX - rb.MinPoint.X
+                If rb.MaxPoint.X > maxX Then shiftX = maxX - rb.MaxPoint.X
+                If rb.MinPoint.Y < minY Then shiftY = minY - rb.MinPoint.Y
+                If rb.MaxPoint.Y > maxY Then shiftY = maxY - rb.MaxPoint.Y
+            Else
+                Dim clampedX As Double = x
+                Dim clampedY As Double = y
+                If clampedX < minX Then clampedX = minX
+                If clampedX > maxX Then clampedX = maxX
+                If clampedY < minY Then clampedY = minY
+                If clampedY > maxY Then clampedY = maxY
+                shiftX = clampedX - x
+                shiftY = clampedY - y
+            End If
 
-            If Math.Abs(clampedX - x) > 0.000001 OrElse Math.Abs(clampedY - y) > 0.000001 Then
-                gd.Text.Origin = tg.CreatePoint2d(clampedX, clampedY)
+            If Math.Abs(shiftX) > 0.000001 OrElse Math.Abs(shiftY) > 0.000001 Then
+                gd.Text.Origin = tg.CreatePoint2d(x + shiftX, y + shiftY)
                 moved += 1
             End If
         Catch
@@ -129,6 +144,16 @@ Private Function ClampDimensionsToSheetBounds(sh As Sheet, app As Inventor.Appli
     Next
 
     Return moved
+End Function
+
+Private Function GetDimensionRangeBox(gd As GeneralDimension) As Box2d
+    If gd Is Nothing Then Return Nothing
+
+    Try
+        Return gd.RangeBox
+    Catch
+        Return Nothing
+    End Try
 End Function
 
 ' 0 = горизонтальные, 1 = вертикальные, 2 = прочие/наклонные
