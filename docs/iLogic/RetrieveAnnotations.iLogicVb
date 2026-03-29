@@ -16,6 +16,7 @@ Sub Main()
     Dim skipped As Integer = 0
     Dim arranged As Integer = 0
     Dim clamped As Integer = 0
+    Dim overlapResolved As Integer = 0
 
     ' Проходим по всем листам в документе
     For Each sh As Sheet In doc.Sheets
@@ -45,6 +46,9 @@ Sub Main()
 
         ' 4. Ограничиваем положение размеров рамками листа
         clamped += ClampDimensionsToSheetBounds(sh, app)
+
+        ' 5. Разводим размеры, чтобы они не накладывались друг на друга
+        overlapResolved += ResolveDimensionOverlaps(sh, app)
     Next
 
     ' Обновляем чертеж для отображения изменений
@@ -53,7 +57,8 @@ Sub Main()
     System.Windows.Forms.MessageBox.Show("Обработано видов: " & processed.ToString() & vbCrLf &
                                          "Пропущено: " & skipped.ToString() & vbCrLf &
                                          "Упорядочено размеров: " & arranged.ToString() & vbCrLf &
-                                         "Возвращено в границы листа: " & clamped.ToString(), "Готово")
+                                         "Возвращено в границы листа: " & clamped.ToString() & vbCrLf &
+                                         "Разведено пересечений: " & overlapResolved.ToString(), "Готово")
 End Sub
 
 Private Function ArrangeDimensionsOnSheet(sh As Sheet, app As Inventor.Application) As Integer
@@ -146,6 +151,90 @@ Private Function ClampDimensionsToSheetBounds(sh As Sheet, app As Inventor.Appli
     Return moved
 End Function
 
+Private Function ResolveDimensionOverlaps(sh As Sheet, app As Inventor.Application) As Integer
+    If sh Is Nothing OrElse app Is Nothing Then Return 0
+
+    Dim moved As Integer = 0
+    Dim maxPasses As Integer = 6
+    Dim tg As TransientGeometry = app.TransientGeometry
+    If tg Is Nothing Then Return 0
+
+    ' Ограничения "рабочей рамки" листа.
+    Dim margin As Double = 1.0
+    Dim minX As Double = margin
+    Dim minY As Double = margin
+    Dim maxX As Double = Math.Max(minX, sh.Width - margin)
+    Dim maxY As Double = Math.Max(minY, sh.Height - margin)
+
+    Dim dims As New List(Of GeneralDimension)()
+    For Each gd As GeneralDimension In sh.DrawingDimensions.GeneralDimensions
+        If gd IsNot Nothing Then dims.Add(gd)
+    Next
+    If dims.Count < 2 Then Return 0
+
+    ' Стабильный порядок для читаемого результата.
+    dims.Sort(AddressOf CompareDimensionsByTextOrigin)
+
+    For pass As Integer = 1 To maxPasses
+        Dim changedOnPass As Boolean = False
+
+        For i As Integer = 0 To dims.Count - 1
+            Dim a As GeneralDimension = dims(i)
+            Dim rbA As Box2d = GetDimensionRangeBox(a)
+            If rbA Is Nothing Then Continue For
+
+            For j As Integer = i + 1 To dims.Count - 1
+                Dim b As GeneralDimension = dims(j)
+                Dim rbB As Box2d = GetDimensionRangeBox(b)
+                If rbB Is Nothing Then Continue For
+
+                If Not BoxesOverlap(rbA, rbB) Then Continue For
+
+                Try
+                    Dim orientation As Integer = GetDimensionBucket(b)
+                    Dim x As Double = b.Text.Origin.X
+                    Dim y As Double = b.Text.Origin.Y
+                    Dim newX As Double = x
+                    Dim newY As Double = y
+                    Dim spacing As Double = 0.8
+
+                    ' Разводим в направлении, наиболее типичном для ориентации размера:
+                    ' горизонтальные — по Y, вертикальные — по X, прочие — диагональю.
+                    Select Case orientation
+                        Case 0
+                            newY = y - (rbA.MaxPoint.Y - rbB.MinPoint.Y) - spacing
+                        Case 1
+                            newX = x + (rbA.MaxPoint.X - rbB.MinPoint.X) + spacing
+                        Case Else
+                            newX = x + spacing
+                            newY = y - spacing
+                    End Select
+
+                    ' Гарантированно оставляем в пределах рамки листа.
+                    newX = ClampValue(newX, minX, maxX)
+                    newY = ClampValue(newY, minY, maxY)
+
+                    If Math.Abs(newX - x) > 0.000001 OrElse Math.Abs(newY - y) > 0.000001 Then
+                        b.Text.Origin = tg.CreatePoint2d(newX, newY)
+                        moved += 1
+                        changedOnPass = True
+                        rbB = GetDimensionRangeBox(b)
+                        If rbB Is Nothing Then Exit For
+                    End If
+                Catch
+                    ' Некоторые размеры могут запрещать ручное смещение текста.
+                End Try
+            Next
+        Next
+
+        If Not changedOnPass Then Exit For
+    Next
+
+    ' После разведения повторно прижимаем к рамке для гарантии.
+    moved += ClampDimensionsToSheetBounds(sh, app)
+    Return moved
+End Function
+
 Private Function GetDimensionRangeBox(gd As GeneralDimension) As Box2d
     If gd Is Nothing Then Return Nothing
 
@@ -227,4 +316,21 @@ Private Function CompareDimensionsByTextOrigin(a As GeneralDimension,
     If ax > bx Then Return 1
 
     Return 0
+End Function
+
+Private Function BoxesOverlap(a As Box2d, b As Box2d) As Boolean
+    If a Is Nothing OrElse b Is Nothing Then Return False
+
+    If a.MaxPoint.X <= b.MinPoint.X Then Return False
+    If b.MaxPoint.X <= a.MinPoint.X Then Return False
+    If a.MaxPoint.Y <= b.MinPoint.Y Then Return False
+    If b.MaxPoint.Y <= a.MinPoint.Y Then Return False
+
+    Return True
+End Function
+
+Private Function ClampValue(value As Double, minValue As Double, maxValue As Double) As Double
+    If value < minValue Then Return minValue
+    If value > maxValue Then Return maxValue
+    Return value
 End Function
